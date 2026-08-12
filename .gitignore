@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Generated audio
+generated/
+*.wav
+*.mp3
+*.flac
+
+# Hugging Face cache
+.cache/
+.huggingface/
+
+# Model files
+*.bin
+*.safetensors
+models/
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
