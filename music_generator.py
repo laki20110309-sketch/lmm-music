@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import scipy.io.wavfile
 import torch
 from transformers import AutoProcessor, MusicgenForConditionalGeneration
@@ -68,14 +69,21 @@ class MusicGenerator:
         print("しばらく待ってください。")
         print()
 
-        audio_values = self.model.generate(
-            **inputs,
-            do_sample=True,
-            guidance_scale=3.0,
-            max_new_tokens=512,
-        )
+        with torch.inference_mode():
+            audio_values = self.model.generate(
+                **inputs,
+                do_sample=True,
+                guidance_scale=3.0,
+                max_new_tokens=512,
+            )
 
         audio = audio_values[0, 0].detach().cpu().numpy()
+
+        # WAV保存用にfloat32へ変換
+        audio = audio.astype(np.float32)
+
+        # -1.0 ～ 1.0 の範囲に収める
+        audio = np.clip(audio, -1.0, 1.0)
 
         output_path = OUTPUT_DIR / "music.wav"
 
