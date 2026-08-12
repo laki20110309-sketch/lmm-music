@@ -74,7 +74,7 @@ class MusicGenerator:
                 **inputs,
                 do_sample=True,
                 guidance_scale=3.0,
-                max_new_tokens=512,
+                max_new_tokens=1503,
             )
 
         audio = audio_values[0, 0].detach().cpu().numpy()
