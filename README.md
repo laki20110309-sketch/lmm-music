@@ -1,19 +1,45 @@
 # LMM MUSIC 🎧
 
-AI-powered local music generation project.
+AIを使って音楽を生成するプロジェクトです。
 
-LMM MUSIC is a local AI music generator designed to create
-music based on the intended use, mood, genre, and atmosphere.
+「どんな動画・コンテンツに使う音楽なのか」を入力すると、
+AIがその内容に合った音楽を生成することを目標にしています。
 
-## Current Status
+---
 
-Currently developing the first prototype.
+## 🎵 現在できること
 
-```text
-Text Prompt
-    ↓
+現在は開発初期段階です。
+
+まずは、
+
+入力した文章
+↓
 MusicGen
-    ↓
-RTX GPU
-    ↓
-WAV Music
+↓
+RTX 4060 Ti
+↓
+音楽ファイル（WAV）
+
+という流れを作っています。
+
+---
+
+## 💻 必要な環境
+
+- Windows
+- Python 3.12
+- NVIDIA GPU
+- CUDA対応PyTorch
+- RTX 4060 Ti 8GB
+
+---
+
+## 🚀 起動方法
+
+このプロジェクトをPCにダウンロードします。
+
+その後、プロジェクトフォルダで仮想環境を有効にします。
+
+```cmd
+.venv\Scripts\activate
