@@ -1,4 +1,5 @@
 import json
+import shutil
 import time
 from pathlib import Path
 from urllib.parse import urljoin
@@ -8,7 +9,7 @@ import requests
 
 
 # =========================================================
-# LMM MUSIC 設定
+# 基本設定
 # =========================================================
 
 ACE_STEP_API = "http://127.0.0.1:8001"
@@ -21,14 +22,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 # =========================================================
-# ACE-Step API 通信
+# ACE-Step API
 # =========================================================
 
 def check_api():
-    """
-    ACE-Step APIが起動しているか確認する。
-    """
-
     try:
         response = requests.get(
             f"{ACE_STEP_API}/health",
@@ -39,7 +36,13 @@ def check_api():
 
         data = response.json()
 
-        return data.get("data", {}).get("status") == "ok"
+        if data.get("code") == 200:
+            return True
+
+        if data.get("data") is not None:
+            return True
+
+        return False
 
     except Exception:
         return False
@@ -50,14 +53,6 @@ def api_post(
     payload: dict,
     timeout: int = 300,
 ):
-    """
-    ACE-Step APIへPOST。
-
-    release_taskはモデルやサーバー状態によって
-    返答に時間がかかる場合があるため、
-    30秒ではなく5分待つ。
-    """
-
     response = requests.post(
         f"{ACE_STEP_API}{endpoint}",
         json=payload,
@@ -80,7 +75,7 @@ def api_post(
 
 
 # =========================================================
-# AI用プロンプト生成
+# プロンプト生成
 # =========================================================
 
 def build_prompt(
@@ -136,21 +131,9 @@ def wait_for_result(
     task_id: str,
     progress=None,
 ):
-    """
-    ACE-Stepのタスクが完了するまで確認する。
-
-    status:
-      0 = 生成中
-      1 = 成功
-      2 = 失敗
-    """
-
-    # 最大20分
     max_wait_seconds = 1200
 
     start_time = time.time()
-
-    last_status_text = ""
 
     while True:
 
@@ -187,32 +170,19 @@ def wait_for_result(
                 0,
             )
 
-            # ---------------------------------------------
-            # 生成中
-            # ---------------------------------------------
-
             if status == 0:
 
-                elapsed_text = (
-                    f"生成中... "
-                    f"{int(elapsed)}秒経過"
-                )
-
-                if progress and elapsed_text != last_status_text:
+                if progress:
                     progress(
                         None,
-                        desc=elapsed_text,
+                        desc=(
+                            f"音楽を生成中... "
+                            f"{int(elapsed)}秒経過"
+                        ),
                     )
 
-                    last_status_text = elapsed_text
-
                 time.sleep(2)
-
                 continue
-
-            # ---------------------------------------------
-            # 成功
-            # ---------------------------------------------
 
             if status == 1:
 
@@ -238,10 +208,6 @@ def wait_for_result(
 
                 return result[0]
 
-            # ---------------------------------------------
-            # 失敗
-            # ---------------------------------------------
-
             if status == 2:
 
                 error_result = job.get(
@@ -265,44 +231,131 @@ def wait_for_result(
 
 
 # =========================================================
-# 音源ダウンロード
+# 音源保存
 # =========================================================
 
-def download_audio(
-    file_url: str,
+def save_audio(
+    file_value: str,
     task_id: str,
 ):
+    """
+    ACE-Stepから返された音源を保存する。
 
-    if file_url.startswith(
-        "http://"
-    ) or file_url.startswith(
-        "https://"
-    ):
-        audio_url = file_url
+    対応:
+    1. Windowsのローカルファイルパス
+    2. /v1/audio?path=... のAPI URL
+    3. http:// / https:// のURL
+    """
 
-    else:
-        audio_url = urljoin(
-            ACE_STEP_API,
-            file_url,
+    if not file_value:
+        raise RuntimeError(
+            "生成された音源ファイルが見つかりません。"
         )
-
-    response = requests.get(
-        audio_url,
-        timeout=300,
-    )
-
-    response.raise_for_status()
 
     output_path = (
         OUTPUT_DIR /
         f"{task_id}.mp3"
     )
 
-    output_path.write_bytes(
-        response.content
-    )
+    file_value = str(file_value)
 
-    return output_path
+    # -----------------------------------------------------
+    # ケース1:
+    # ACE-StepがWindowsローカルパスを返した
+    # -----------------------------------------------------
+
+    local_path = Path(file_value)
+
+    if local_path.is_file():
+
+        shutil.copy2(
+            local_path,
+            output_path,
+        )
+
+        return output_path
+
+    # -----------------------------------------------------
+    # ケース2:
+    # 完全なURL
+    # -----------------------------------------------------
+
+    if file_value.startswith(
+        "http://"
+    ) or file_value.startswith(
+        "https://"
+    ):
+
+        response = requests.get(
+            file_value,
+            timeout=300,
+        )
+
+        response.raise_for_status()
+
+        output_path.write_bytes(
+            response.content
+        )
+
+        return output_path
+
+    # -----------------------------------------------------
+    # ケース3:
+    # /v1/audio?path=...
+    # -----------------------------------------------------
+
+    if file_value.startswith(
+        "/v1/audio"
+    ):
+
+        audio_url = urljoin(
+            ACE_STEP_API,
+            file_value,
+        )
+
+        response = requests.get(
+            audio_url,
+            timeout=300,
+        )
+
+        response.raise_for_status()
+
+        output_path.write_bytes(
+            response.content
+        )
+
+        return output_path
+
+    # -----------------------------------------------------
+    # ケース4:
+    # ACE-StepがファイルURLではなく
+    # ローカル相対パスを返した場合
+    # -----------------------------------------------------
+
+    possible_paths = [
+        Path(file_value),
+        Path(
+            "C:/Users/darkz/music-ai/ACE-Step-1.5"
+        ) / file_value.lstrip(
+            "/\\"
+        ),
+    ]
+
+    for possible_path in possible_paths:
+
+        if possible_path.is_file():
+
+            shutil.copy2(
+                possible_path,
+                output_path,
+            )
+
+            return output_path
+
+    raise RuntimeError(
+        "生成された音源を取得できませんでした。\n\n"
+        f"ACE-Stepの返却値:\n{file_value}"
+    )
 
 
 # =========================================================
@@ -319,19 +372,10 @@ def generate_music(
     progress=gr.Progress(),
 ):
 
-    # ---------------------------------------------
-    # 入力チェック
-    # ---------------------------------------------
-
     if not purpose and not description:
-
         raise gr.Error(
             "用途か曲のイメージを入力してください。"
         )
-
-    # ---------------------------------------------
-    # API確認
-    # ---------------------------------------------
 
     progress(
         0.02,
@@ -339,15 +383,10 @@ def generate_music(
     )
 
     if not check_api():
-
         raise gr.Error(
             "ACE-Step APIが起動していません。\n\n"
             "ACE-Step側を先に起動してください。"
         )
-
-    # ---------------------------------------------
-    # 長さ
-    # ---------------------------------------------
 
     duration_map = {
         "10秒": 10,
@@ -361,10 +400,6 @@ def generate_music(
         30,
     )
 
-    # ---------------------------------------------
-    # プロンプト
-    # ---------------------------------------------
-
     prompt = build_prompt(
         purpose=purpose,
         description=description,
@@ -373,38 +408,17 @@ def generate_music(
         instrumental=instrumental,
     )
 
-    # ---------------------------------------------
-    # ACE-Stepへ送信
-    # ---------------------------------------------
-
-    progress(
-        0.05,
-        desc="音楽の設計を作成中...",
-    )
-
     payload = {
         "prompt": prompt,
-
         "model": "acestep-v15-turbo",
-
         "audio_duration": audio_duration,
-
         "audio_format": "mp3",
-
         "batch_size": 1,
-
         "inference_steps": 8,
-
         "thinking": True,
-
         "use_cot_caption": True,
-
         "use_cot_language": True,
-
-        "lm_model_path": (
-            "acestep-5Hz-lm-0.6B"
-        ),
-
+        "lm_model_path": "acestep-5Hz-lm-0.6B",
         "backend": "pt",
     }
 
@@ -415,7 +429,6 @@ def generate_music(
             desc="ACE-Stepへ送信中...",
         )
 
-        # 5分待つ
         task_response = api_post(
             "/release_task",
             payload,
@@ -432,7 +445,6 @@ def generate_music(
         )
 
         if not task_id:
-
             raise RuntimeError(
                 "ACE-StepからタスクIDを取得できませんでした。\n"
                 f"{task_response}"
@@ -441,10 +453,6 @@ def generate_music(
         print(
             f"[LMM MUSIC] Task ID: {task_id}"
         )
-
-        # ---------------------------------------------
-        # 生成待ち
-        # ---------------------------------------------
 
         progress(
             0.10,
@@ -456,33 +464,19 @@ def generate_music(
             progress=progress,
         )
 
-        # ---------------------------------------------
-        # 音源取得
-        # ---------------------------------------------
-
         progress(
             0.95,
-            desc="音源を保存中...",
+            desc="生成された音源を保存中...",
         )
 
-        file_url = result.get(
+        file_value = result.get(
             "file"
         )
 
-        if not file_url:
-
-            raise RuntimeError(
-                "生成された音源ファイルが見つかりません。"
-            )
-
-        output_path = download_audio(
-            file_url,
+        output_path = save_audio(
+            file_value,
             task_id,
         )
-
-        # ---------------------------------------------
-        # メタ情報
-        # ---------------------------------------------
 
         metas = result.get(
             "metas",
@@ -513,10 +507,6 @@ def generate_music(
             "timesignature",
             "4",
         )
-
-        # ---------------------------------------------
-        # 結果表示
-        # ---------------------------------------------
 
         result_markdown = f"""
 ## 🎵 生成完了
@@ -560,8 +550,7 @@ ACE-Step 1.5
 
         raise gr.Error(
             "ACE-Stepからの応答がタイムアウトしました。\n\n"
-            "生成処理がまだ動いている可能性があります。"
-            "ACE-Step側の画面も確認してください。"
+            "ACE-Step側で生成が続いている可能性があります。"
         )
 
     except requests.HTTPError as exc:
@@ -579,7 +568,7 @@ ACE-Step 1.5
 
 
 # =========================================================
-# デザイン
+# UI
 # =========================================================
 
 CSS = """
@@ -609,16 +598,8 @@ body {
     font-size: 18px !important;
     font-weight: 700 !important;
 }
-
-.panel {
-    border-radius: 18px !important;
-}
 """
 
-
-# =========================================================
-# UI
-# =========================================================
 
 with gr.Blocks(
     title="LMM MUSIC",
@@ -638,14 +619,9 @@ with gr.Blocks(
 
     with gr.Row():
 
-        # =================================================
-        # 左側
-        # =================================================
-
         with gr.Column(
             scale=1,
             variant="panel",
-            elem_classes=["panel"],
         ):
 
             gr.Markdown(
@@ -720,14 +696,9 @@ with gr.Blocks(
                 elem_classes="generate-button",
             )
 
-        # =================================================
-        # 右側
-        # =================================================
-
         with gr.Column(
             scale=1,
             variant="panel",
-            elem_classes=["panel"],
         ):
 
             gr.Markdown(
@@ -753,10 +724,6 @@ with gr.Blocks(
                 lines=8,
                 interactive=False,
             )
-
-    # =====================================================
-    # ボタン
-    # =====================================================
 
     generate_button.click(
         fn=generate_music,
@@ -786,4 +753,6 @@ if __name__ == "__main__":
         server_name=APP_HOST,
         server_port=APP_PORT,
         show_error=True,
+        theme=gr.themes.Base(),
+        css=CSS,
     )
