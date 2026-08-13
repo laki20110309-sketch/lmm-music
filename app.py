@@ -48,7 +48,7 @@ def check_api():
         return False
 
 
-def api_post_json(
+def api_post(
     endpoint: str,
     payload: dict,
     timeout: int = 300,
@@ -64,61 +64,12 @@ def api_post_json(
     data = response.json()
 
     if data.get("code") not in (None, 200):
-        error = data.get(
-            "error",
-            "ACE-Step APIでエラーが発生しました。",
-        )
-
-        raise RuntimeError(error)
-
-    return data
-
-
-def api_post_multipart(
-    endpoint: str,
-    fields: dict,
-    file_path: str,
-    timeout: int = 300,
-):
-    """
-    reference_audio を含む multipart/form-data リクエスト。
-    """
-
-    path = Path(file_path)
-
-    if not path.is_file():
         raise RuntimeError(
-            f"参照音声ファイルが見つかりません:\n{path}"
-        )
-
-    with path.open("rb") as audio_file:
-
-        files = {
-            "reference_audio": (
-                path.name,
-                audio_file,
-                "audio/mpeg",
+            data.get(
+                "error",
+                "ACE-Step APIでエラーが発生しました。",
             )
-        }
-
-        response = requests.post(
-            f"{ACE_STEP_API}{endpoint}",
-            data=fields,
-            files=files,
-            timeout=timeout,
         )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if data.get("code") not in (None, 200):
-        error = data.get(
-            "error",
-            "ACE-Step APIでエラーが発生しました。",
-        )
-
-        raise RuntimeError(error)
 
     return data
 
@@ -128,12 +79,11 @@ def api_post_multipart(
 # =========================================================
 
 def build_prompt(
-    purpose: str,
-    description: str,
-    genre: str,
-    moods: list[str] | None,
-    instruments: list[str] | None,
-    vocal_enabled: bool,
+    purpose,
+    description,
+    genre,
+    moods,
+    instruments,
 ):
     parts = []
 
@@ -162,35 +112,25 @@ def build_prompt(
             "Instruments: " + ", ".join(instruments)
         )
 
-    if vocal_enabled:
-        parts.append(
-            "Vocals enabled."
-        )
-    else:
-        parts.append(
-            "Instrumental music with no vocals."
-        )
-
     parts.append(
-        "Professional modern music production. "
-        "Detailed arrangement with layered instrumentation, "
-        "strong rhythm section, clear transitions, "
-        "dynamic progression, and a memorable climax."
+        "Professional modern music production, "
+        "detailed arrangement, layered instrumentation, "
+        "clear rhythm section, strong transitions, "
+        "dynamic progression, memorable climax."
     )
 
     return ". ".join(parts)
 
 
 # =========================================================
-# 生成結果待ち
+# 結果待ち
 # =========================================================
 
 def wait_for_result(
-    task_id: str,
+    task_id,
     progress=None,
 ):
     max_wait_seconds = 1200
-
     start_time = time.time()
 
     while True:
@@ -204,7 +144,7 @@ def wait_for_result(
 
         try:
 
-            response = api_post_json(
+            response = api_post(
                 "/query_result",
                 {
                     "task_id_list": [task_id]
@@ -234,8 +174,8 @@ def wait_for_result(
                     progress(
                         None,
                         desc=(
-                            f"音楽を生成中... "
-                            f"{int(elapsed)}秒経過"
+                            f"音楽を生成中..."
+                            f" {int(elapsed)}秒"
                         ),
                     )
 
@@ -281,7 +221,6 @@ def wait_for_result(
             time.sleep(2)
 
         except requests.RequestException as exc:
-
             raise RuntimeError(
                 "ACE-Step APIとの通信に失敗しました。\n"
                 f"{exc}"
@@ -293,22 +232,25 @@ def wait_for_result(
 # =========================================================
 
 def save_audio(
-    file_value: str,
-    task_id: str,
+    file_value,
+    task_id,
 ):
     if not file_value:
         raise RuntimeError(
             "生成された音源ファイルが見つかりません。"
         )
 
+    file_value = str(file_value)
+
     output_path = (
         OUTPUT_DIR /
         f"{task_id}.mp3"
     )
 
-    file_value = str(file_value)
-
+    # ---------------------------------------------
     # ローカルファイル
+    # ---------------------------------------------
+
     local_path = Path(file_value)
 
     if local_path.is_file():
@@ -320,11 +262,13 @@ def save_audio(
 
         return output_path
 
-    # 完全URL
-    if file_value.startswith(
-        "http://"
-    ) or file_value.startswith(
-        "https://"
+    # ---------------------------------------------
+    # URL
+    # ---------------------------------------------
+
+    if (
+        file_value.startswith("http://")
+        or file_value.startswith("https://")
     ):
 
         response = requests.get(
@@ -340,7 +284,10 @@ def save_audio(
 
         return output_path
 
-    # ACE-Step API URL
+    # ---------------------------------------------
+    # /v1/audio
+    # ---------------------------------------------
+
     if file_value.startswith(
         "/v1/audio"
     ):
@@ -363,30 +310,9 @@ def save_audio(
 
         return output_path
 
-    # 相対パス候補
-    possible_paths = [
-        Path(file_value),
-        Path(
-            "C:/Users/darkz/music-ai/ACE-Step-1.5"
-        ) / file_value.lstrip(
-            "/\\"
-        ),
-    ]
-
-    for possible_path in possible_paths:
-
-        if possible_path.is_file():
-
-            shutil.copy2(
-                possible_path,
-                output_path,
-            )
-
-            return output_path
-
     raise RuntimeError(
         "生成された音源を取得できませんでした。\n\n"
-        f"ACE-Stepの返却値:\n{file_value}"
+        f"{file_value}"
     )
 
 
@@ -425,7 +351,7 @@ def generate_music(
         lyrics = ""
 
     # -----------------------------------------------------
-    # APIチェック
+    # API確認
     # -----------------------------------------------------
 
     progress(
@@ -464,67 +390,71 @@ def generate_music(
         genre=genre,
         moods=moods,
         instruments=instruments,
-        vocal_enabled=vocal_enabled,
     )
 
     # -----------------------------------------------------
     # 基本パラメータ
     # -----------------------------------------------------
 
-    common_fields = {
+    payload = {
         "prompt": prompt,
         "model": "acestep-v15-turbo",
-        "audio_duration": str(audio_duration),
+        "audio_duration": audio_duration,
         "audio_format": "mp3",
-        "batch_size": "1",
-        "inference_steps": "8",
-        "thinking": "true",
-        "use_cot_caption": "true",
-        "use_cot_language": "true",
+        "batch_size": 1,
+        "inference_steps": 8,
+        "thinking": True,
+        "use_cot_caption": True,
+        "use_cot_language": True,
         "lm_model_path": "acestep-5Hz-lm-0.6B",
         "backend": "pt",
+        "vocal_language": "ja",
     }
 
     # -----------------------------------------------------
     # 歌詞
     # -----------------------------------------------------
 
-    if vocal_enabled and lyrics.strip():
-        common_fields["lyrics"] = lyrics.strip()
+    if vocal_enabled:
+        payload["lyrics"] = lyrics.strip()
 
-        # 日本語歌詞を想定
-        common_fields["vocal_language"] = "ja"
+    else:
+        payload["lyrics"] = "[Instrumental]"
 
     # -----------------------------------------------------
     # 参照音声
     # -----------------------------------------------------
 
-    reference_enabled = bool(
-        reference_audio
-    )
+    if reference_audio:
 
-    if reference_enabled:
+        reference_path = Path(
+            reference_audio
+        )
 
-        common_fields["task_type"] = "cover"
+        if not reference_path.is_file():
+            raise gr.Error(
+                "参照音声ファイルが見つかりません。"
+            )
 
-        common_fields["audio_cover_strength"] = str(
+        # ACE-Step公式仕様:
+        # reference_audio はファイルパス
+        payload["reference_audio"] = str(
+            reference_path.resolve()
+        )
+
+        payload["audio_cover_strength"] = float(
             reference_strength
         )
 
-        common_fields["instruction"] = (
-            "Create a new song using the uploaded reference "
-            "audio as a voice and style reference. "
-            "Keep the intended musical direction, arrangement "
-            "and lyrics from the user input while using the "
-            "reference audio characteristics as guidance."
-        )
+        # スタイル転送
+        payload["task_type"] = "cover"
 
     else:
 
-        common_fields["task_type"] = "text2music"
+        payload["task_type"] = "text2music"
 
     # -----------------------------------------------------
-    # 生成開始
+    # 生成
     # -----------------------------------------------------
 
     try:
@@ -534,22 +464,11 @@ def generate_music(
             desc="音楽の設計を作成中...",
         )
 
-        if reference_enabled:
-
-            task_response = api_post_multipart(
-                "/release_task",
-                common_fields,
-                reference_audio,
-                timeout=300,
-            )
-
-        else:
-
-            task_response = api_post_json(
-                "/release_task",
-                common_fields,
-                timeout=300,
-            )
+        task_response = api_post(
+            "/release_task",
+            payload,
+            timeout=300,
+        )
 
         task_data = task_response.get(
             "data",
@@ -581,7 +500,7 @@ def generate_music(
         )
 
         # -------------------------------------------------
-        # 音源保存
+        # 保存
         # -------------------------------------------------
 
         progress(
@@ -589,17 +508,13 @@ def generate_music(
             desc="音源を保存中...",
         )
 
-        file_value = result.get(
-            "file"
-        )
-
         output_path = save_audio(
-            file_value,
+            result.get("file"),
             task_id,
         )
 
         # -------------------------------------------------
-        # メタ情報
+        # メタデータ
         # -------------------------------------------------
 
         metas = result.get(
@@ -632,11 +547,13 @@ def generate_music(
             "4",
         )
 
-        reference_text = (
-            f"あり ({reference_strength:.2f})"
-            if reference_enabled
-            else "なし"
-        )
+        if reference_audio:
+            reference_text = (
+                f"あり "
+                f"(反映度 {reference_strength:.2f})"
+            )
+        else:
+            reference_text = "なし"
 
         result_markdown = f"""
 ## 🎵 生成完了
@@ -682,17 +599,17 @@ ACE-Step 1.5
             prompt,
         )
 
-    except requests.Timeout:
-
-        raise gr.Error(
-            "ACE-Stepからの応答がタイムアウトしました。"
-        )
-
     except requests.HTTPError as exc:
 
         raise gr.Error(
             "ACE-Step APIでHTTPエラーが発生しました。\n\n"
             f"{exc}"
+        )
+
+    except requests.Timeout:
+
+        raise gr.Error(
+            "ACE-Step APIからの応答がタイムアウトしました。"
         )
 
     except Exception as exc:
@@ -732,21 +649,6 @@ body {
     min-height: 58px !important;
     font-size: 18px !important;
     font-weight: 700 !important;
-}
-
-.panel {
-    border-radius: 18px !important;
-}
-
-.reference-box {
-    border-radius: 15px !important;
-    margin-top: 10px;
-}
-
-.strength-value {
-    text-align: center;
-    font-size: 18px;
-    font-weight: 700;
 }
 """
 
@@ -874,7 +776,7 @@ with gr.Blocks(
             lyrics = gr.Textbox(
                 label="歌詞",
                 placeholder=(
-                    "ここに使用したい歌詞を入力してください。"
+                    "使用したい歌詞を入力してください。"
                 ),
                 lines=8,
                 visible=False,
@@ -887,10 +789,6 @@ with gr.Blocks(
                 inputs=vocal_enabled,
                 outputs=lyrics,
             )
-
-            # =================================================
-            # 参照音声
-            # =================================================
 
             gr.Markdown(
                 "### 🎙️ 参照音声"
@@ -906,8 +804,8 @@ with gr.Blocks(
             )
 
             gr.Markdown(
-                "参照音声の声質・スタイルを "
-                "生成へ反映します。"
+                "参照音声を使うと、"
+                "音色・歌い方などの特徴を生成に反映します。"
             )
 
             reference_strength = gr.Slider(
@@ -917,8 +815,8 @@ with gr.Blocks(
                 step=0.05,
                 label="参照音声の反映度",
                 info=(
-                    "低いほど音楽側の自由度が高く、"
-                    "高いほど参照音声の特徴を強く反映します。"
+                    "低いほど自由度が高く、"
+                    "高いほど参照を強く反映します。"
                 ),
             )
 
