@@ -75,7 +75,7 @@ def api_post(
 
 
 # =========================================================
-# プロンプト生成
+# プロンプト作成
 # =========================================================
 
 def build_prompt(
@@ -83,7 +83,9 @@ def build_prompt(
     description: str,
     genre: str,
     moods: list[str] | None,
-    instrumental: bool,
+    instruments: list[str] | None,
+    vocal_enabled: bool,
+    lyrics: str,
 ):
     parts = []
 
@@ -107,7 +109,24 @@ def build_prompt(
             "Mood: " + ", ".join(moods)
         )
 
-    if instrumental:
+    if instruments:
+        parts.append(
+            "Instruments: " + ", ".join(instruments)
+        )
+
+    if vocal_enabled:
+        parts.append(
+            "Vocals are enabled."
+        )
+
+        if lyrics:
+            parts.append(
+                "Use the following user-provided lyrics exactly as the lyrical content. "
+                "Do not rewrite, replace, or invent additional lyrics:\n"
+                f"{lyrics}"
+            )
+
+    else:
         parts.append(
             "Instrumental music with no vocals."
         )
@@ -115,16 +134,15 @@ def build_prompt(
     parts.append(
         "Professional modern music production. "
         "Detailed arrangement with layered instrumentation, "
-        "strong drums, bass, harmony, melody, "
-        "dynamic progression, transitions, "
-        "and a memorable climax."
+        "strong rhythm section, clear transitions, "
+        "dynamic progression, and a memorable climax."
     )
 
     return ". ".join(parts)
 
 
 # =========================================================
-# 生成結果を待つ
+# 生成結果待ち
 # =========================================================
 
 def wait_for_result(
@@ -238,15 +256,6 @@ def save_audio(
     file_value: str,
     task_id: str,
 ):
-    """
-    ACE-Stepから返された音源を保存する。
-
-    対応:
-    1. Windowsのローカルファイルパス
-    2. /v1/audio?path=... のAPI URL
-    3. http:// / https:// のURL
-    """
-
     if not file_value:
         raise RuntimeError(
             "生成された音源ファイルが見つかりません。"
@@ -259,11 +268,7 @@ def save_audio(
 
     file_value = str(file_value)
 
-    # -----------------------------------------------------
-    # ケース1:
-    # ACE-StepがWindowsローカルパスを返した
-    # -----------------------------------------------------
-
+    # ローカルファイル
     local_path = Path(file_value)
 
     if local_path.is_file():
@@ -275,11 +280,7 @@ def save_audio(
 
         return output_path
 
-    # -----------------------------------------------------
-    # ケース2:
-    # 完全なURL
-    # -----------------------------------------------------
-
+    # 完全URL
     if file_value.startswith(
         "http://"
     ) or file_value.startswith(
@@ -299,11 +300,7 @@ def save_audio(
 
         return output_path
 
-    # -----------------------------------------------------
-    # ケース3:
-    # /v1/audio?path=...
-    # -----------------------------------------------------
-
+    # ACE-Step APIの音源URL
     if file_value.startswith(
         "/v1/audio"
     ):
@@ -326,12 +323,7 @@ def save_audio(
 
         return output_path
 
-    # -----------------------------------------------------
-    # ケース4:
-    # ACE-StepがファイルURLではなく
-    # ローカル相対パスを返した場合
-    # -----------------------------------------------------
-
+    # 相対パス候補
     possible_paths = [
         Path(file_value),
         Path(
@@ -368,7 +360,9 @@ def generate_music(
     duration,
     genre,
     moods,
-    instrumental,
+    instruments,
+    vocal_enabled,
+    lyrics,
     progress=gr.Progress(),
 ):
 
@@ -377,6 +371,16 @@ def generate_music(
             "用途か曲のイメージを入力してください。"
         )
 
+    # 歌詞入力がある場合
+    if vocal_enabled and not lyrics.strip():
+        raise gr.Error(
+            "ボーカルを有効にした場合は歌詞を入力してください。"
+        )
+
+    # ボーカルOFFなら歌詞は無視
+    if not vocal_enabled:
+        lyrics = ""
+
     progress(
         0.02,
         desc="ACE-Stepとの接続を確認中...",
@@ -384,8 +388,7 @@ def generate_music(
 
     if not check_api():
         raise gr.Error(
-            "ACE-Step APIが起動していません。\n\n"
-            "ACE-Step側を先に起動してください。"
+            "ACE-Step APIが起動していません。"
         )
 
     duration_map = {
@@ -405,28 +408,53 @@ def generate_music(
         description=description,
         genre=genre,
         moods=moods,
-        instrumental=instrumental,
+        instruments=instruments,
+        vocal_enabled=vocal_enabled,
+        lyrics=lyrics,
     )
+
+    # -----------------------------------------------------
+    # 歌詞情報
+    # -----------------------------------------------------
+
+    lyrics_payload = None
+
+    if vocal_enabled and lyrics.strip():
+
+        lyrics_payload = lyrics.strip()
 
     payload = {
         "prompt": prompt,
         "model": "acestep-v15-turbo",
+
         "audio_duration": audio_duration,
+
         "audio_format": "mp3",
+
         "batch_size": 1,
+
         "inference_steps": 8,
+
         "thinking": True,
+
         "use_cot_caption": True,
+
         "use_cot_language": True,
+
         "lm_model_path": "acestep-5Hz-lm-0.6B",
+
         "backend": "pt",
     }
+
+    # 歌詞をACE-Stepに渡す
+    if lyrics_payload:
+        payload["lyrics"] = lyrics_payload
 
     try:
 
         progress(
             0.08,
-            desc="ACE-Stepへ送信中...",
+            desc="音楽の設計を作成中...",
         )
 
         task_response = api_post(
@@ -445,6 +473,7 @@ def generate_music(
         )
 
         if not task_id:
+
             raise RuntimeError(
                 "ACE-StepからタスクIDを取得できませんでした。\n"
                 f"{task_response}"
@@ -466,7 +495,7 @@ def generate_music(
 
         progress(
             0.95,
-            desc="生成された音源を保存中...",
+            desc="音源を保存中...",
         )
 
         file_value = result.get(
@@ -528,6 +557,9 @@ def generate_music(
 **長さ**  
 {real_duration}秒
 
+**ボーカル**  
+{"あり" if vocal_enabled else "なし"}
+
 **モデル**  
 ACE-Step 1.5
 
@@ -549,8 +581,7 @@ ACE-Step 1.5
     except requests.Timeout:
 
         raise gr.Error(
-            "ACE-Stepからの応答がタイムアウトしました。\n\n"
-            "ACE-Step側で生成が続いている可能性があります。"
+            "ACE-Stepからの応答がタイムアウトしました。"
         )
 
     except requests.HTTPError as exc:
@@ -598,6 +629,10 @@ body {
     font-size: 18px !important;
     font-weight: 700 !important;
 }
+
+.panel {
+    border-radius: 18px !important;
+}
 """
 
 
@@ -619,9 +654,14 @@ with gr.Blocks(
 
     with gr.Row():
 
+        # =================================================
+        # 左
+        # =================================================
+
         with gr.Column(
             scale=1,
             variant="panel",
+            elem_classes=["panel"],
         ):
 
             gr.Markdown(
@@ -640,7 +680,6 @@ with gr.Blocks(
                 placeholder=(
                     "例：最初は緊張感。"
                     "徐々に盛り上がって最後に爆発。"
-                    "重いキックとシンセを使いたい。"
                 ),
                 lines=5,
             )
@@ -685,9 +724,57 @@ with gr.Blocks(
                 ],
             )
 
-            instrumental = gr.Checkbox(
-                label="ボーカルなし",
-                value=True,
+            gr.Markdown(
+                "### 🎹 使用する楽器"
+            )
+
+            instruments = gr.CheckboxGroup(
+                choices=[
+                    "Piano",
+                    "Electric Piano",
+                    "Acoustic Guitar",
+                    "Electric Guitar",
+                    "Bass",
+                    "Sub Bass",
+                    "Drums",
+                    "808",
+                    "Synth Lead",
+                    "Synth Pad",
+                    "Arpeggio",
+                    "Strings",
+                    "Orchestra",
+                    "Brass",
+                    "Choir",
+                    "Percussion",
+                ],
+                label="楽器",
+            )
+
+            gr.Markdown(
+                "### 🎤 ボーカル"
+            )
+
+            vocal_enabled = gr.Checkbox(
+                label="ボーカルを入れる",
+                value=False,
+            )
+
+            lyrics = gr.Textbox(
+                label="歌詞",
+                placeholder=(
+                    "ここに使用したい歌詞を入力してください。\n\n"
+                    "入力した歌詞をそのまま使用します。"
+                ),
+                lines=8,
+                visible=False,
+            )
+
+            vocal_enabled.change(
+                fn=lambda enabled: gr.update(
+                    visible=enabled
+                ),
+                inputs=vocal_enabled,
+                outputs=lyrics,
             )
 
             generate_button = gr.Button(
@@ -696,9 +783,14 @@ with gr.Blocks(
                 elem_classes="generate-button",
             )
 
+        # =================================================
+        # 右
+        # =================================================
+
         with gr.Column(
             scale=1,
             variant="panel",
+            elem_classes=["panel"],
         ):
 
             gr.Markdown(
@@ -721,7 +813,7 @@ with gr.Blocks(
 
             generated_prompt = gr.Textbox(
                 label="実際にAIへ送った指示",
-                lines=8,
+                lines=10,
                 interactive=False,
             )
 
@@ -733,7 +825,9 @@ with gr.Blocks(
             duration,
             genre,
             moods,
-            instrumental,
+            instruments,
+            vocal_enabled,
+            lyrics,
         ],
         outputs=[
             result_audio,
