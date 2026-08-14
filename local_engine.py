@@ -2,6 +2,7 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request, send_file
+from flask_cors import CORS
 
 
 # =========================================================
@@ -19,6 +20,18 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 
+# WebサイトからLocal Engineへ接続できるようにする。
+# Engine自体は127.0.0.1で待ち受けるため、
+# 外部ネットワークから直接アクセスされることはない。
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": "*",
+        }
+    },
+)
+
 
 # =========================================================
 # Health
@@ -26,10 +39,6 @@ app = Flask(__name__)
 
 @app.get("/health")
 def health():
-    """
-    LMM Engine自体が動いているか確認。
-    """
-
     ace_step = False
 
     try:
@@ -62,17 +71,14 @@ def health():
 
 @app.get("/device")
 def device():
-    """
-    今後、実際のローカル生成能力をここへ追加する。
-    """
-
     return jsonify(
         {
             "local_engine": True,
-            "recommended": "local",
+            "ace_step": True,
+            "engine_name": "LMM MUSIC Local Engine",
             "message": (
-                "このPCでローカル生成エンジンが"
-                "利用可能です。"
+                "このPCではローカル生成エンジンを"
+                "利用できます。"
             ),
         }
     )
@@ -84,17 +90,6 @@ def device():
 
 @app.post("/generate")
 def generate():
-    """
-    現段階ではACE-Step APIへの橋渡し。
-
-    後で、
-    - GPU生成
-    - CPU生成
-    - モデル選択
-    - 180秒の分割生成
-    などをここで管理する。
-    """
-
     data = request.get_json(
         silent=True
     )
@@ -106,24 +101,28 @@ def generate():
             }
         ), 400
 
-    if not Path.exists(
-        Path(".")
-    ):
-        return jsonify(
-            {
-                "error": "Engine directory error"
-            }
-        ), 500
-
     try:
-
         response = requests.post(
             f"{ACE_STEP_API}/release_task",
             json=data,
             timeout=300,
         )
 
-        response.raise_for_status()
+        if response.status_code >= 400:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text
+
+            return jsonify(
+                {
+                    "error": (
+                        "ACE-Step APIで"
+                        "エラーが発生しました。"
+                    ),
+                    "detail": detail,
+                }
+            ), response.status_code
 
         return jsonify(
             response.json()
@@ -143,7 +142,50 @@ def generate():
 
 
 # =========================================================
-# Audio
+# Query Result
+# =========================================================
+
+@app.post("/query_result")
+def query_result():
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+        return jsonify(
+            {
+                "error": "JSONがありません。"
+            }
+        ), 400
+
+    try:
+        response = requests.post(
+            f"{ACE_STEP_API}/query_result",
+            json=data,
+            timeout=60,
+        )
+
+        response.raise_for_status()
+
+        return jsonify(
+            response.json()
+        )
+
+    except requests.RequestException as exc:
+
+        return jsonify(
+            {
+                "error": (
+                    "ACE-Step APIから"
+                    "結果を取得できませんでした。"
+                ),
+                "detail": str(exc),
+            }
+        ), 500
+
+
+# =========================================================
+# Download / Audio
 # =========================================================
 
 @app.get("/audio")
@@ -156,7 +198,9 @@ def audio():
     if not filename:
         return jsonify(
             {
-                "error": "fileが指定されていません。"
+                "error": (
+                    "fileが指定されていません。"
+                )
             }
         ), 400
 
