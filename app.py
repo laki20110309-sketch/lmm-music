@@ -1,16 +1,15 @@
 import json
-import re
 import shutil
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import gradio as gr
 import requests
 
 
 # =========================================================
-# 基本設定
+# LMM MUSIC
 # =========================================================
 
 ACE_STEP_API = "http://127.0.0.1:8001"
@@ -24,11 +23,11 @@ REFERENCE_DIR = Path("reference_audio")
 OUTPUT_DIR.mkdir(exist_ok=True)
 REFERENCE_DIR.mkdir(exist_ok=True)
 
-MAX_REFERENCE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_REFERENCE_SIZE = 50 * 1024 * 1024
 
 
 # =========================================================
-# ACE-Step API
+# API
 # =========================================================
 
 def check_api():
@@ -66,7 +65,7 @@ def api_post_json(
             error_data = response.text
 
         raise RuntimeError(
-            "ACE-Step API Error\n\n"
+            f"ACE-Step API Error\n"
             f"HTTP: {response.status_code}\n\n"
             f"{error_data}"
         )
@@ -89,16 +88,11 @@ def api_post_reference_audio(
     reference_path: str,
     timeout: int = 300,
 ):
-    """
-    ACE-Step公式APIのmultipart/form-data方式で
-    reference_audioを送信する。
-    """
-
     path = Path(reference_path)
 
     if not path.is_file():
         raise RuntimeError(
-            f"参照音声が見つかりません:\n{path}"
+            "参照音声ファイルが見つかりません。"
         )
 
     file_size = path.stat().st_size
@@ -110,11 +104,8 @@ def api_post_reference_audio(
 
     if file_size > MAX_REFERENCE_SIZE:
         raise RuntimeError(
-            "参照音声が大きすぎます。"
-            "50MB以下にしてください。"
+            "参照音声は50MB以下にしてください。"
         )
-
-    suffix = path.suffix.lower()
 
     mime_types = {
         ".wav": "audio/wav",
@@ -127,7 +118,7 @@ def api_post_reference_audio(
     }
 
     mime_type = mime_types.get(
-        suffix,
+        path.suffix.lower(),
         "application/octet-stream",
     )
 
@@ -149,14 +140,13 @@ def api_post_reference_audio(
         )
 
     if response.status_code >= 400:
-
         try:
             error_data = response.json()
         except Exception:
             error_data = response.text
 
         raise RuntimeError(
-            "ACE-Step参照音声APIエラー\n\n"
+            f"ACE-Step Reference Audio Error\n"
             f"HTTP: {response.status_code}\n\n"
             f"{error_data}"
         )
@@ -175,20 +165,10 @@ def api_post_reference_audio(
 
 
 # =========================================================
-# URLから参照音声をダウンロード
+# Reference Audio
 # =========================================================
 
-def download_reference_from_url(
-    url: str,
-):
-    """
-    直接アクセスできる音声ファイルURLを
-    ローカルへ保存する。
-
-    例:
-    https://example.com/my_voice.wav
-    https://example.com/audio/sample.mp3
-    """
+def download_reference_from_url(url: str):
 
     url = url.strip()
 
@@ -202,16 +182,9 @@ def download_reference_from_url(
         "https",
     ):
         raise RuntimeError(
-            "リンクは http:// または https:// で始まる"
-            "音声ファイルURLを使用してください。"
+            "音声リンクは http:// または https:// "
+            "で始まるURLを入力してください。"
         )
-
-    # 不要なクエリなどを除いて拡張子を取得
-    clean_path = parsed.path.lower()
-
-    extension = Path(
-        clean_path
-    ).suffix.lower()
 
     allowed_extensions = {
         ".wav",
@@ -223,112 +196,86 @@ def download_reference_from_url(
         ".webm",
     }
 
-    try:
+    extension = Path(
+        parsed.path
+    ).suffix.lower()
 
-        response = requests.get(
-            url,
-            stream=True,
-            timeout=60,
-            allow_redirects=True,
-            headers={
-                "User-Agent": "LMM-MUSIC/1.0"
-            },
-        )
+    response = requests.get(
+        url,
+        stream=True,
+        timeout=60,
+        allow_redirects=True,
+        headers={
+            "User-Agent": "LMM-MUSIC/1.0"
+        },
+    )
 
-        response.raise_for_status()
+    response.raise_for_status()
 
-        content_type = (
-            response.headers.get(
-                "Content-Type",
-                ""
-            ).lower()
-        )
+    content_type = response.headers.get(
+        "Content-Type",
+        "",
+    ).lower()
 
-        # 拡張子がない場合はContent-Typeから判断
-        content_is_audio = (
-            content_type.startswith("audio/")
-            or "application/octet-stream"
-            in content_type
-        )
+    content_is_audio = (
+        content_type.startswith("audio/")
+        or "application/octet-stream"
+        in content_type
+    )
 
-        if (
-            extension not in allowed_extensions
-            and not content_is_audio
-        ):
-            raise RuntimeError(
-                "このリンクは直接の音声ファイルとして"
-                "認識できませんでした。\n\n"
-                "WAV / MP3 / M4A / FLAC / OGGなどの"
-                "直接音声ファイルURLを使用してください。"
-            )
-
-        if extension not in allowed_extensions:
-
-            extension = ".mp3"
-
-        filename = (
-            f"reference_"
-            f"{int(time.time())}"
-            f"{extension}"
-        )
-
-        output_path = (
-            REFERENCE_DIR /
-            filename
-        )
-
-        total_size = 0
-
-        with output_path.open(
-            "wb"
-        ) as output_file:
-
-            for chunk in response.iter_content(
-                chunk_size=1024 * 1024
-            ):
-
-                if not chunk:
-                    continue
-
-                total_size += len(chunk)
-
-                if total_size > MAX_REFERENCE_SIZE:
-
-                    output_file.close()
-
-                    try:
-                        output_path.unlink()
-                    except FileNotFoundError:
-                        pass
-
-                    raise RuntimeError(
-                        "参照音声が50MBを超えています。"
-                    )
-
-                output_file.write(chunk)
-
-        if not output_path.exists():
-            raise RuntimeError(
-                "参照音声を保存できませんでした。"
-            )
-
-        if output_path.stat().st_size <= 0:
-            raise RuntimeError(
-                "ダウンロードした音声ファイルが空です。"
-            )
-
-        return output_path
-
-    except requests.RequestException as exc:
-
+    if (
+        extension not in allowed_extensions
+        and not content_is_audio
+    ):
         raise RuntimeError(
-            "参照音声リンクのダウンロードに失敗しました。\n\n"
-            f"{exc}"
-        ) from exc
+            "このリンクは直接の音声ファイルURLとして"
+            "認識できませんでした。"
+        )
+
+    if extension not in allowed_extensions:
+        extension = ".mp3"
+
+    filename = (
+        f"reference_"
+        f"{int(time.time())}"
+        f"{extension}"
+    )
+
+    output_path = (
+        REFERENCE_DIR / filename
+    )
+
+    total_size = 0
+
+    with output_path.open("wb") as output_file:
+
+        for chunk in response.iter_content(
+            chunk_size=1024 * 1024
+        ):
+
+            if not chunk:
+                continue
+
+            total_size += len(chunk)
+
+            if total_size > MAX_REFERENCE_SIZE:
+
+                try:
+                    output_path.unlink()
+                except FileNotFoundError:
+                    pass
+
+                raise RuntimeError(
+                    "参照音声が50MBを超えています。"
+                )
+
+            output_file.write(chunk)
+
+    return output_path
 
 
 # =========================================================
-# プロンプト
+# Prompt
 # =========================================================
 
 def build_prompt(
@@ -369,22 +316,21 @@ def build_prompt(
     if reference_enabled:
         parts.append(
             "Use the reference audio as a vocal timbre "
-            "and stylistic reference while creating a "
-            "new musical arrangement."
+            "and stylistic reference."
         )
 
     parts.append(
         "Professional modern music production, "
         "detailed arrangement, layered instrumentation, "
         "clear rhythm section, strong transitions, "
-        "dynamic progression, memorable climax."
+        "dynamic progression and memorable climax."
     )
 
     return ". ".join(parts)
 
 
 # =========================================================
-# 生成結果を待つ
+# Result
 # =========================================================
 
 def wait_for_result(
@@ -392,19 +338,15 @@ def wait_for_result(
     progress=None,
 ):
     max_wait_seconds = 1200
-
     start_time = time.time()
 
     while True:
 
-        elapsed = (
-            time.time() -
-            start_time
-        )
+        elapsed = time.time() - start_time
 
         if elapsed >= max_wait_seconds:
             raise TimeoutError(
-                "音楽生成が20分を超えたため停止しました。"
+                "音楽生成が20分を超えました。"
             )
 
         response = api_post_json(
@@ -431,11 +373,9 @@ def wait_for_result(
             0,
         )
 
-        # 生成中
         if status == 0:
 
             if progress:
-
                 progress(
                     None,
                     desc=(
@@ -448,7 +388,6 @@ def wait_for_result(
 
             continue
 
-        # 成功
         if status == 1:
 
             raw_result = job.get(
@@ -460,41 +399,28 @@ def wait_for_result(
                 raw_result,
                 str,
             ):
-
                 result = json.loads(
                     raw_result
                 )
-
             else:
-
                 result = raw_result
 
             if not result:
                 raise RuntimeError(
-                    "ACE-Stepから生成結果が返ってきませんでした。"
+                    "生成結果が空でした。"
                 )
 
             return result[0]
 
-        # 失敗
         if status == 2:
-
-            error_result = job.get(
-                "result",
-                "",
-            )
 
             raise RuntimeError(
                 "ACE-Stepで音楽生成に失敗しました。\n"
-                f"{error_result}"
+                f"{job.get('result', '')}"
             )
 
         time.sleep(2)
 
-
-# =========================================================
-# 生成音源保存
-# =========================================================
 
 def save_audio(
     file_value,
@@ -502,7 +428,7 @@ def save_audio(
 ):
     if not file_value:
         raise RuntimeError(
-            "生成された音源ファイルが見つかりません。"
+            "生成された音源が見つかりません。"
         )
 
     file_value = str(file_value)
@@ -512,28 +438,18 @@ def save_audio(
         f"{task_id}.mp3"
     )
 
-    # ローカルパス
-    local_path = Path(
-        file_value
-    )
+    local_path = Path(file_value)
 
     if local_path.is_file():
-
         shutil.copy2(
             local_path,
             output_path,
         )
-
         return output_path
 
-    # 完全URL
     if (
-        file_value.startswith(
-            "http://"
-        )
-        or file_value.startswith(
-            "https://"
-        )
+        file_value.startswith("http://")
+        or file_value.startswith("https://")
     ):
 
         response = requests.get(
@@ -549,14 +465,13 @@ def save_audio(
 
         return output_path
 
-    # /v1/audio
     if file_value.startswith(
         "/v1/audio"
     ):
 
-        audio_url = (
-            f"{ACE_STEP_API}"
-            f"{file_value}"
+        audio_url = urljoin(
+            ACE_STEP_API,
+            file_value,
         )
 
         response = requests.get(
@@ -573,13 +488,12 @@ def save_audio(
         return output_path
 
     raise RuntimeError(
-        "生成された音源を取得できませんでした。\n\n"
-        f"{file_value}"
+        f"音源を取得できませんでした。\n{file_value}"
     )
 
 
 # =========================================================
-# 音楽生成
+# Generate
 # =========================================================
 
 def generate_music(
@@ -596,25 +510,15 @@ def generate_music(
     reference_strength,
     progress=gr.Progress(),
 ):
-    # -----------------------------------------------------
-    # 入力チェック
-    # -----------------------------------------------------
-
     if not purpose and not description:
-
         raise gr.Error(
             "用途か曲のイメージを入力してください。"
         )
 
     if vocal_enabled and not lyrics.strip():
-
         raise gr.Error(
             "ボーカルを有効にした場合は歌詞を入力してください。"
         )
-
-    # -----------------------------------------------------
-    # APIチェック
-    # -----------------------------------------------------
 
     progress(
         0.02,
@@ -622,25 +526,20 @@ def generate_music(
     )
 
     if not check_api():
-
         raise gr.Error(
             "ACE-Step APIが起動していません。"
         )
 
-    # -----------------------------------------------------
-    # 参照音声を決定
-    # -----------------------------------------------------
-
-    resolved_reference_audio = None
+    reference_path = None
 
     if reference_url.strip():
 
         progress(
             0.04,
-            desc="参照音声リンクを取得中...",
+            desc="参照音声を取得中...",
         )
 
-        resolved_reference_audio = (
+        reference_path = (
             download_reference_from_url(
                 reference_url
             )
@@ -648,19 +547,14 @@ def generate_music(
 
     elif reference_audio:
 
-        resolved_reference_audio = Path(
+        reference_path = Path(
             reference_audio
         )
 
-        if not resolved_reference_audio.is_file():
-
+        if not reference_path.is_file():
             raise gr.Error(
-                "アップロードされた参照音声が見つかりません。"
+                "参照音声ファイルが見つかりません。"
             )
-
-    # -----------------------------------------------------
-    # 長さ
-    # -----------------------------------------------------
 
     duration_map = {
         "10秒": 10,
@@ -674,10 +568,6 @@ def generate_music(
         30,
     )
 
-    # -----------------------------------------------------
-    # プロンプト
-    # -----------------------------------------------------
-
     prompt = build_prompt(
         purpose=purpose,
         description=description,
@@ -685,107 +575,55 @@ def generate_music(
         moods=moods,
         instruments=instruments,
         reference_enabled=(
-            resolved_reference_audio
-            is not None
+            reference_path is not None
         ),
     )
-
-    # -----------------------------------------------------
-    # API共通パラメータ
-    # -----------------------------------------------------
 
     fields = {
         "prompt": prompt,
         "model": "acestep-v15-turbo",
-
         "audio_duration": str(
             audio_duration
         ),
-
         "audio_format": "mp3",
-
         "batch_size": "1",
-
         "inference_steps": "8",
-
         "thinking": "true",
-
         "use_cot_caption": "true",
-
         "use_cot_language": "true",
-
         "lm_model_path":
             "acestep-5Hz-lm-0.6B",
-
         "lm_backend": "pt",
-
         "vocal_language": "ja",
-
         "task_type": "text2music",
     }
 
-    # -----------------------------------------------------
-    # 歌詞
-    # -----------------------------------------------------
-
     if vocal_enabled:
-
-        fields["lyrics"] = (
-            lyrics.strip()
-        )
-
+        fields["lyrics"] = lyrics.strip()
     else:
-
         fields["lyrics"] = "[inst]"
 
-    # -----------------------------------------------------
-    # 参照音声
-    # -----------------------------------------------------
-
-    reference_enabled = (
-        resolved_reference_audio
-        is not None
-    )
-
-    if reference_enabled:
+    if reference_path:
 
         fields[
             "audio_cover_strength"
         ] = str(
-            float(
-                reference_strength
-            )
+            float(reference_strength)
         )
-
-    # -----------------------------------------------------
-    # 生成
-    # -----------------------------------------------------
 
     try:
 
         progress(
             0.08,
-            desc="音楽の設計を作成中...",
+            desc="音楽を設計中...",
         )
 
-        if reference_enabled:
-
-            print()
-            print(
-                "[LMM MUSIC] "
-                "Reference audio:"
-            )
-            print(
-                resolved_reference_audio
-            )
+        if reference_path:
 
             task_response = (
                 api_post_reference_audio(
                     fields,
-                    str(
-                        resolved_reference_audio
-                    ),
-                    timeout=300,
+                    str(reference_path),
                 )
             )
 
@@ -793,15 +631,8 @@ def generate_music(
 
             task_response = api_post_json(
                 "/release_task",
-                {
-                    **fields,
-                },
-                timeout=300,
+                fields,
             )
-
-        # -------------------------------------------------
-        # Task ID
-        # -------------------------------------------------
 
         task_data = task_response.get(
             "data",
@@ -813,16 +644,9 @@ def generate_music(
         )
 
         if not task_id:
-
             raise RuntimeError(
-                "ACE-StepからタスクIDを取得できませんでした。\n"
-                f"{task_response}"
+                "ACE-StepからタスクIDを取得できませんでした。"
             )
-
-        print(
-            f"[LMM MUSIC] Task ID: "
-            f"{task_id}"
-        )
 
         progress(
             0.10,
@@ -831,12 +655,8 @@ def generate_music(
 
         result = wait_for_result(
             task_id,
-            progress=progress,
+            progress,
         )
-
-        # -------------------------------------------------
-        # 保存
-        # -------------------------------------------------
 
         progress(
             0.95,
@@ -848,20 +668,12 @@ def generate_music(
             task_id,
         )
 
-        # -------------------------------------------------
-        # メタ情報
-        # -------------------------------------------------
-
         metas = result.get(
             "metas",
             {},
         ) or {}
 
-        bpm = metas.get(
-            "bpm",
-            "-",
-        )
-
+        bpm = metas.get("bpm", "-")
         keyscale = metas.get(
             "keyscale",
             "-",
@@ -877,50 +689,12 @@ def generate_music(
             genre or "-",
         )
 
-        time_signature = metas.get(
-            "timesignature",
-            "4",
-        )
+        info = f"""
+**{genres}**
 
-        if reference_enabled:
+BPM {bpm}　·　{keyscale}　·　{real_duration}秒
 
-            reference_text = (
-                "あり / "
-                f"反映度 {reference_strength:.2f}"
-            )
-
-        else:
-
-            reference_text = "なし"
-
-        result_markdown = f"""
-## 🎵 生成完了
-
-### 音楽情報
-
-**ジャンル**  
-{genres}
-
-**BPM**  
-{bpm}
-
-**Key**  
-{keyscale}
-
-**拍子**  
-{time_signature}/4
-
-**長さ**  
-{real_duration}秒
-
-**ボーカル**  
-{"あり" if vocal_enabled else "なし"}
-
-**参照音声**  
-{reference_text}
-
-**モデル**  
-ACE-Step 1.5
+{"🎙️ 参照音声あり" if reference_path else "🎹 オリジナル生成"}
 """
 
         progress(
@@ -930,15 +704,8 @@ ACE-Step 1.5
 
         return (
             str(output_path),
-            result_markdown,
+            info,
             prompt,
-        )
-
-    except requests.Timeout:
-
-        raise gr.Error(
-            "ACE-Step APIからの応答が"
-            "タイムアウトしました。"
         )
 
     except Exception as exc:
@@ -949,40 +716,118 @@ ACE-Step 1.5
 
 
 # =========================================================
-# CSS
+# Design
 # =========================================================
 
 CSS = """
+:root {
+    --bg: #08090d;
+    --panel: #101218;
+    --panel2: #141720;
+    --line: rgba(255,255,255,.08);
+    --text: #f5f7fb;
+    --muted: #8d93a3;
+    --accent: #ffffff;
+}
+
 body {
-    background: #090a0f;
+    background: var(--bg) !important;
 }
 
 .gradio-container {
-    max-width: 1180px !important;
-    margin: auto !important;
+    max-width: 1280px !important;
+    margin: 0 auto !important;
+    background: var(--bg) !important;
 }
 
-#main-title {
-    text-align: center;
-    margin-top: 25px;
-    margin-bottom: 5px;
+footer {
+    display: none !important;
 }
 
-#main-subtitle {
-    text-align: center;
-    opacity: 0.65;
-    margin-bottom: 30px;
+.contain {
+    background: transparent !important;
+}
+
+#app-header {
+    padding: 22px 8px 34px;
+}
+
+#logo {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.6px;
+}
+
+#nav {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+#hero {
+    padding: 28px 8px 42px;
+}
+
+#hero h1 {
+    font-size: 56px !important;
+    line-height: 1.02 !important;
+    letter-spacing: -2.8px !important;
+    margin-bottom: 14px !important;
+}
+
+#hero p {
+    color: var(--muted);
+    font-size: 16px;
+}
+
+.lmm-card {
+    background: var(--panel) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 22px !important;
+    padding: 8px !important;
+}
+
+.lmm-card textarea,
+.lmm-card input {
+    background: var(--panel2) !important;
+    border-color: var(--line) !important;
+}
+
+.section-title {
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    letter-spacing: .12em !important;
+    color: var(--muted) !important;
 }
 
 .generate-button {
     min-height: 58px !important;
-    font-size: 18px !important;
-    font-weight: 700 !important;
+    border-radius: 14px !important;
+    font-size: 16px !important;
+    font-weight: 800 !important;
 }
 
-.reference-note {
-    opacity: 0.7;
-    font-size: 13px;
+.track-card {
+    min-height: 360px;
+}
+
+.small-muted {
+    color: var(--muted) !important;
+    font-size: 13px !important;
+}
+
+#footer {
+    border-top: 1px solid var(--line);
+    margin-top: 60px;
+    padding: 22px 8px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+@media (max-width: 800px) {
+
+    #hero h1 {
+        font-size: 42px !important;
+    }
 }
 """
 
@@ -993,31 +838,70 @@ body {
 
 with gr.Blocks(
     title="LMM MUSIC",
+    theme=gr.themes.Base(),
+    css=CSS,
 ) as demo:
 
-    gr.Markdown(
-        "# ♪ LMM MUSIC",
-        elem_id="main-title",
-    )
+    # -----------------------------------------------------
+    # Header
+    # -----------------------------------------------------
 
-    gr.Markdown(
-        "動画やコンテンツに合わせた音楽を作る",
-        elem_id="main-subtitle",
-    )
-
-    with gr.Row():
-
-        # =================================================
-        # 左
-        # =================================================
+    with gr.Row(
+        elem_id="app-header",
+    ):
 
         with gr.Column(
             scale=1,
-            variant="panel",
         ):
 
             gr.Markdown(
-                "## MUSIC BRIEF"
+                "**LMM MUSIC**",
+                elem_id="logo",
+            )
+
+        with gr.Column(
+            scale=0,
+        ):
+
+            gr.Markdown(
+                "CREATE  ·  MY TRACKS  ·  ACCOUNT",
+                elem_id="nav",
+            )
+
+    # -----------------------------------------------------
+    # Hero
+    # -----------------------------------------------------
+
+    with gr.Column(
+        elem_id="hero",
+    ):
+
+        gr.Markdown(
+            "# MAKE YOUR SOUND"
+        )
+
+        gr.Markdown(
+            "あなたのアイデアから、音楽を作る。"
+        )
+
+    # -----------------------------------------------------
+    # Main
+    # -----------------------------------------------------
+
+    with gr.Row():
+
+        # ================================================
+        # Creator
+        # ================================================
+
+        with gr.Column(
+            scale=1,
+            elem_classes=["lmm-card"],
+        ):
+
+            gr.Markdown(
+                "CREATE",
+                elem_classes=["section-title"],
             )
 
             purpose = gr.Textbox(
@@ -1028,42 +912,43 @@ with gr.Blocks(
             )
 
             description = gr.Textbox(
-                label="曲のイメージ",
+                label="音楽のイメージ",
                 placeholder=(
                     "例：最初は緊張感。"
-                    "徐々に盛り上がって最後に爆発。"
+                    "後半で一気に爆発する。"
                 ),
                 lines=5,
             )
 
-            duration = gr.Radio(
-                label="曲の長さ",
-                choices=[
-                    "10秒",
-                    "30秒",
-                    "60秒",
-                    "90秒",
-                ],
-                value="30秒",
-            )
+            with gr.Row():
 
-            genre = gr.Dropdown(
-                label="ジャンル",
-                choices=[
-                    "EDM",
-                    "Cinematic",
-                    "Electronic",
-                    "Rock",
-                    "Hip-Hop",
-                    "Pop",
-                    "Ambient",
-                    "Drum & Bass",
-                ],
-                value="EDM",
-            )
+                duration = gr.Dropdown(
+                    choices=[
+                        "10秒",
+                        "30秒",
+                        "60秒",
+                        "90秒",
+                    ],
+                    value="30秒",
+                    label="長さ",
+                )
+
+                genre = gr.Dropdown(
+                    choices=[
+                        "EDM",
+                        "Cinematic",
+                        "Electronic",
+                        "Rock",
+                        "Hip-Hop",
+                        "Pop",
+                        "Ambient",
+                        "Drum & Bass",
+                    ],
+                    value="EDM",
+                    label="ジャンル",
+                )
 
             moods = gr.CheckboxGroup(
-                label="雰囲気",
                 choices=[
                     "Epic",
                     "Energetic",
@@ -1074,10 +959,7 @@ with gr.Blocks(
                     "Uplifting",
                     "Tense",
                 ],
-            )
-
-            gr.Markdown(
-                "### 🎹 使用する楽器"
+                label="雰囲気",
             )
 
             instruments = gr.CheckboxGroup(
@@ -1099,11 +981,7 @@ with gr.Blocks(
                     "Choir",
                     "Percussion",
                 ],
-                label="楽器",
-            )
-
-            gr.Markdown(
-                "### 🎤 ボーカル"
+                label="使用する楽器",
             )
 
             vocal_enabled = gr.Checkbox(
@@ -1113,10 +991,8 @@ with gr.Blocks(
 
             lyrics = gr.Textbox(
                 label="歌詞",
-                placeholder=(
-                    "ここに指定の歌詞を入力"
-                ),
-                lines=8,
+                placeholder="指定した歌詞を入力",
+                lines=6,
                 visible=False,
             )
 
@@ -1129,7 +1005,8 @@ with gr.Blocks(
             )
 
             gr.Markdown(
-                "### 🎙️ 参照音声"
+                "REFERENCE VOICE",
+                elem_classes=["section-title"],
             )
 
             reference_audio = gr.Audio(
@@ -1140,20 +1017,8 @@ with gr.Blocks(
             )
 
             reference_url = gr.Textbox(
-                label="または音声ファイルのリンク",
-                placeholder=(
-                    "https://example.com/voice.wav"
-                ),
-                info=(
-                    "直接WAV / MP3 / M4A / FLACなどを取得できる"
-                    "音声ファイルURLを入力してください。"
-                ),
-            )
-
-            gr.Markdown(
-                "参照音声は声質・歌い方・音響的特徴の"
-                "参考として使用します。",
-                elem_classes=["reference-note"],
+                label="音声ファイルURL",
+                placeholder="https://example.com/voice.wav",
             )
 
             reference_strength = gr.Slider(
@@ -1162,54 +1027,65 @@ with gr.Blocks(
                 value=0.35,
                 step=0.05,
                 label="参照音声の反映度",
-                info=(
-                    "低いほど自由度が高く、"
-                    "高いほど参照音声に寄せます。"
-                ),
             )
 
             generate_button = gr.Button(
-                "✨ 音楽を作る",
+                "CREATE MUSIC  →",
                 variant="primary",
-                elem_classes="generate-button",
+                elem_classes=["generate-button"],
             )
 
-        # =================================================
-        # 右
-        # =================================================
+        # ================================================
+        # Result
+        # ================================================
 
         with gr.Column(
             scale=1,
-            variant="panel",
+            elem_classes=[
+                "lmm-card",
+                "track-card",
+            ],
         ):
 
             gr.Markdown(
-                "## YOUR TRACK"
+                "YOUR TRACK",
+                elem_classes=["section-title"],
             )
 
             result_audio = gr.Audio(
-                label="生成された音楽",
+                label="",
                 type="filepath",
                 interactive=False,
             )
 
             result_info = gr.Markdown(
-                "ここに生成結果が表示されます。"
+                "ここに生成した音楽が表示されます。",
+                elem_classes=["small-muted"],
             )
 
             gr.Markdown(
-                "## AI PROMPT"
+                "AI PROMPT",
+                elem_classes=["section-title"],
             )
 
             generated_prompt = gr.Textbox(
-                label="実際にAIへ送った指示",
-                lines=10,
+                label="",
+                lines=8,
                 interactive=False,
             )
 
-    # =====================================================
-    # 生成ボタン
-    # =====================================================
+    # -----------------------------------------------------
+    # Footer
+    # -----------------------------------------------------
+
+    gr.Markdown(
+        "LMM MUSIC · Local AI Music Studio",
+        elem_id="footer",
+    )
+
+    # -----------------------------------------------------
+    # Generate
+    # -----------------------------------------------------
 
     generate_button.click(
         fn=generate_music,
@@ -1235,7 +1111,7 @@ with gr.Blocks(
 
 
 # =========================================================
-# 起動
+# Launch
 # =========================================================
 
 if __name__ == "__main__":
