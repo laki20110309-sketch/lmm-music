@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import shutil
 import time
@@ -6,6 +8,8 @@ from urllib.parse import urljoin, urlparse
 
 import gradio as gr
 import requests
+
+from device_detector import analyze_device, mode_label
 
 
 # =========================================================
@@ -27,7 +31,7 @@ MAX_REFERENCE_SIZE = 50 * 1024 * 1024
 
 
 # =========================================================
-# API
+# ACE-Step API
 # =========================================================
 
 def check_api():
@@ -385,7 +389,6 @@ def wait_for_result(
                 )
 
             time.sleep(2)
-
             continue
 
         if status == 1:
@@ -493,7 +496,147 @@ def save_audio(
 
 
 # =========================================================
-# Generate
+# Device Detection
+# =========================================================
+
+def update_device_info(
+    gpu_available,
+    gpu_name,
+    gpu_vendor,
+    webgpu_available,
+    cpu_threads,
+    device_memory,
+):
+    try:
+        gpu_available_bool = (
+            str(gpu_available).lower()
+            == "true"
+        )
+
+        webgpu_available_bool = (
+            str(webgpu_available).lower()
+            == "true"
+        )
+
+        cpu_threads_value = None
+
+        if cpu_threads:
+            try:
+                cpu_threads_value = int(
+                    cpu_threads
+                )
+            except (ValueError, TypeError):
+                cpu_threads_value = None
+
+        memory_value = None
+
+        if device_memory:
+            try:
+                memory_value = float(
+                    device_memory
+                )
+            except (ValueError, TypeError):
+                memory_value = None
+
+        info = analyze_device(
+            gpu_available=gpu_available_bool,
+            gpu_name=gpu_name or None,
+            gpu_vendor=gpu_vendor or None,
+            webgpu_available=webgpu_available_bool,
+            cpu_threads=cpu_threads_value,
+            device_memory_gb=memory_value,
+        )
+
+        mode = info.recommended_mode
+
+        if mode == "local_gpu":
+            status_text = "⚡ ローカルGPU生成"
+        elif mode == "local_cpu":
+            status_text = "🖥️ ローカルCPU生成"
+        else:
+            status_text = "☁️ クラウド生成"
+
+        gpu_text = (
+            info.gpu_name
+            if info.gpu_name
+            else "取得できませんでした"
+        )
+
+        cpu_text = (
+            f"{info.cpu_threads} threads"
+            if info.cpu_threads
+            else "取得できませんでした"
+        )
+
+        memory_text = (
+            f"{info.device_memory_gb:g} GB"
+            if info.device_memory_gb
+            else "取得できませんでした"
+        )
+
+        html = f"""
+        <div class="device-status">
+            <div class="device-status-title">
+                {status_text}
+            </div>
+
+            <div class="device-status-reason">
+                {info.reason}
+            </div>
+
+            <div class="device-grid">
+
+                <div class="device-item">
+                    <span>GPU</span>
+                    <strong>{gpu_text}</strong>
+                </div>
+
+                <div class="device-item">
+                    <span>CPU</span>
+                    <strong>{cpu_text}</strong>
+                </div>
+
+                <div class="device-item">
+                    <span>Memory</span>
+                    <strong>{memory_text}</strong>
+                </div>
+
+                <div class="device-item">
+                    <span>WebGPU</span>
+                    <strong>
+                        {"対応" if info.webgpu_available else "非対応"}
+                    </strong>
+                </div>
+
+            </div>
+        </div>
+        """
+
+        return (
+            html,
+            mode,
+        )
+
+    except Exception as exc:
+
+        return (
+            f"""
+            <div class="device-status error">
+                <div class="device-status-title">
+                    端末判定に失敗しました
+                </div>
+
+                <div class="device-status-reason">
+                    {exc}
+                </div>
+            </div>
+            """,
+            "cloud",
+        )
+
+
+# =========================================================
+# Music Generation
 # =========================================================
 
 def generate_music(
@@ -508,6 +651,7 @@ def generate_music(
     reference_audio,
     reference_url,
     reference_strength,
+    selected_mode,
     progress=gr.Progress(),
 ):
     if not purpose and not description:
@@ -529,6 +673,10 @@ def generate_music(
         raise gr.Error(
             "ACE-Step APIが起動していません。"
         )
+
+    # 現段階では生成エンジンはACE-Step。
+    # selected_modeは今後のルーティング用。
+    del selected_mode
 
     reference_path = None
 
@@ -604,7 +752,6 @@ def generate_music(
         fields["lyrics"] = "[inst]"
 
     if reference_path:
-
         fields[
             "audio_cover_strength"
         ] = str(
@@ -673,7 +820,11 @@ def generate_music(
             {},
         ) or {}
 
-        bpm = metas.get("bpm", "-")
+        bpm = metas.get(
+            "bpm",
+            "-",
+        )
+
         keyscale = metas.get(
             "keyscale",
             "-",
@@ -690,6 +841,8 @@ def generate_music(
         )
 
         info = f"""
+### 生成完了
+
 **{genres}**
 
 BPM {bpm}　·　{keyscale}　·　{real_duration}秒
@@ -716,7 +869,7 @@ BPM {bpm}　·　{keyscale}　·　{real_duration}秒
 
 
 # =========================================================
-# Design
+# CSS
 # =========================================================
 
 CSS = """
@@ -728,6 +881,7 @@ CSS = """
     --text: #f5f7fb;
     --muted: #8d93a3;
     --accent: #ffffff;
+    --green: #57e389;
 }
 
 body {
@@ -744,12 +898,8 @@ footer {
     display: none !important;
 }
 
-.contain {
-    background: transparent !important;
-}
-
 #app-header {
-    padding: 22px 8px 34px;
+    padding: 22px 8px 20px;
 }
 
 #logo {
@@ -764,14 +914,13 @@ footer {
 }
 
 #hero {
-    padding: 28px 8px 42px;
+    padding: 28px 8px 28px;
 }
 
 #hero h1 {
     font-size: 56px !important;
     line-height: 1.02 !important;
     letter-spacing: -2.8px !important;
-    margin-bottom: 14px !important;
 }
 
 #hero p {
@@ -786,19 +935,6 @@ footer {
     padding: 8px !important;
 }
 
-.lmm-card textarea,
-.lmm-card input {
-    background: var(--panel2) !important;
-    border-color: var(--line) !important;
-}
-
-.section-title {
-    font-size: 13px !important;
-    font-weight: 700 !important;
-    letter-spacing: .12em !important;
-    color: var(--muted) !important;
-}
-
 .generate-button {
     min-height: 58px !important;
     border-radius: 14px !important;
@@ -806,28 +942,187 @@ footer {
     font-weight: 800 !important;
 }
 
-.track-card {
-    min-height: 360px;
+.device-status {
+    margin-top: 8px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--panel);
 }
 
-.small-muted {
-    color: var(--muted) !important;
-    font-size: 13px !important;
+.device-status-title {
+    font-size: 18px;
+    font-weight: 800;
+    margin-bottom: 8px;
 }
 
-#footer {
-    border-top: 1px solid var(--line);
-    margin-top: 60px;
-    padding: 22px 8px;
+.device-status-reason {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.device-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.device-item {
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--panel2);
+}
+
+.device-item span {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.device-item strong {
+    display: block;
+    font-size: 13px;
+    word-break: break-word;
+}
+
+.device-status.error {
+    border-color: rgba(255, 100, 100, .25);
+}
+
+.section-label {
     color: var(--muted);
     font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    margin-top: 10px;
+    margin-bottom: 6px;
 }
 
 @media (max-width: 800px) {
-
     #hero h1 {
         font-size: 42px !important;
     }
+
+    .device-grid {
+        grid-template-columns: 1fr;
+    }
+}
+"""
+
+
+# =========================================================
+# Browser-side device detection
+# =========================================================
+
+DEVICE_DETECTION_JS = """
+async () => {
+
+    const result = {
+        gpu_available: false,
+        gpu_name: "",
+        gpu_vendor: "",
+        webgpu_available: false,
+        cpu_threads: navigator.hardwareConcurrency || "",
+        device_memory: navigator.deviceMemory || ""
+    };
+
+    // -----------------------------
+    // WebGPU
+    // -----------------------------
+
+    try {
+
+        if (navigator.gpu) {
+
+            const adapter =
+                await navigator.gpu.requestAdapter();
+
+            if (adapter) {
+
+                result.webgpu_available = true;
+                result.gpu_available = true;
+
+                try {
+
+                    const info =
+                        await adapter.requestAdapterInfo();
+
+                    result.gpu_name =
+                        info.description ||
+                        info.device ||
+                        "";
+
+                    result.gpu_vendor =
+                        info.vendor ||
+                        "";
+
+                } catch (error) {
+
+                    // Privacy settings may hide GPU information.
+                    result.gpu_name = "";
+                    result.gpu_vendor = "";
+                }
+            }
+        }
+
+    } catch (error) {
+
+        result.webgpu_available = false;
+    }
+
+
+    // -----------------------------
+    // WebGL fallback
+    // -----------------------------
+
+    if (!result.gpu_name) {
+
+        try {
+
+            const canvas =
+                document.createElement("canvas");
+
+            const gl =
+                canvas.getContext("webgl") ||
+                canvas.getContext("experimental-webgl");
+
+            if (gl) {
+
+                const debugInfo =
+                    gl.getExtension(
+                        "WEBGL_debug_renderer_info"
+                    );
+
+                if (debugInfo) {
+
+                    result.gpu_vendor =
+                        gl.getParameter(
+                            debugInfo.UNMASKED_VENDOR_WEBGL
+                        ) || "";
+
+                    result.gpu_name =
+                        gl.getParameter(
+                            debugInfo.UNMASKED_RENDERER_WEBGL
+                        ) || "";
+                }
+            }
+
+        } catch (error) {
+        }
+    }
+
+
+    return [
+        String(result.gpu_available),
+        result.gpu_name,
+        result.gpu_vendor,
+        String(result.webgpu_available),
+        String(result.cpu_threads),
+        String(result.device_memory),
+    ];
 }
 """
 
@@ -842,9 +1137,42 @@ with gr.Blocks(
     css=CSS,
 ) as demo:
 
-    # -----------------------------------------------------
+    # =====================================================
+    # Hidden device data
+    # =====================================================
+
+    gpu_available = gr.Textbox(
+        visible=False,
+    )
+
+    gpu_name = gr.Textbox(
+        visible=False,
+    )
+
+    gpu_vendor = gr.Textbox(
+        visible=False,
+    )
+
+    webgpu_available = gr.Textbox(
+        visible=False,
+    )
+
+    cpu_threads = gr.Textbox(
+        visible=False,
+    )
+
+    device_memory = gr.Textbox(
+        visible=False,
+    )
+
+    selected_mode = gr.Textbox(
+        value="cloud",
+        visible=False,
+    )
+
+    # =====================================================
     # Header
-    # -----------------------------------------------------
+    # =====================================================
 
     with gr.Row(
         elem_id="app-header",
@@ -868,9 +1196,9 @@ with gr.Blocks(
                 elem_id="nav",
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # Hero
-    # -----------------------------------------------------
+    # =====================================================
 
     with gr.Column(
         elem_id="hero",
@@ -884,15 +1212,42 @@ with gr.Blocks(
             "あなたのアイデアから、音楽を作る。"
         )
 
-    # -----------------------------------------------------
+    # =====================================================
+    # Device status
+    # =====================================================
+
+    gr.Markdown(
+        "DEVICE",
+        elem_classes=["section-label"],
+    )
+
+    device_status = gr.HTML(
+        """
+        <div class="device-status">
+            <div class="device-status-title">
+                端末を確認しています...
+            </div>
+            <div class="device-status-reason">
+                この端末に合った生成方式を確認しています。
+            </div>
+        </div>
+        """
+    )
+
+    detect_button = gr.Button(
+        "端末性能を確認する",
+        visible=False,
+    )
+
+    # =====================================================
     # Main
-    # -----------------------------------------------------
+    # =====================================================
 
     with gr.Row():
 
-        # ================================================
+        # =================================================
         # Creator
-        # ================================================
+        # =================================================
 
         with gr.Column(
             scale=1,
@@ -901,7 +1256,7 @@ with gr.Blocks(
 
             gr.Markdown(
                 "CREATE",
-                elem_classes=["section-title"],
+                elem_classes=["section-label"],
             )
 
             purpose = gr.Textbox(
@@ -950,36 +1305,36 @@ with gr.Blocks(
 
             moods = gr.CheckboxGroup(
                 choices=[
-                    "Epic",
-                    "Energetic",
-                    "Dark",
-                    "Aggressive",
-                    "Emotional",
-                    "Cinematic",
-                    "Uplifting",
-                    "Tense",
+                    "激しい",
+                    "エネルギッシュ",
+                    "ダーク",
+                    "攻撃的",
+                    "エモーショナル",
+                    "シネマティック",
+                    "明るい",
+                    "緊張感",
                 ],
                 label="雰囲気",
             )
 
             instruments = gr.CheckboxGroup(
                 choices=[
-                    "Piano",
-                    "Electric Piano",
-                    "Acoustic Guitar",
-                    "Electric Guitar",
-                    "Bass",
-                    "Sub Bass",
-                    "Drums",
+                    "ピアノ",
+                    "エレクトリックピアノ",
+                    "アコースティックギター",
+                    "エレキギター",
+                    "ベース",
+                    "サブベース",
+                    "ドラム",
                     "808",
-                    "Synth Lead",
-                    "Synth Pad",
-                    "Arpeggio",
-                    "Strings",
-                    "Orchestra",
-                    "Brass",
-                    "Choir",
-                    "Percussion",
+                    "シンセリード",
+                    "シンセパッド",
+                    "アルペジオ",
+                    "ストリングス",
+                    "オーケストラ",
+                    "ブラス",
+                    "コーラス",
+                    "パーカッション",
                 ],
                 label="使用する楽器",
             )
@@ -1006,7 +1361,7 @@ with gr.Blocks(
 
             gr.Markdown(
                 "REFERENCE VOICE",
-                elem_classes=["section-title"],
+                elem_classes=["section-label"],
             )
 
             reference_audio = gr.Audio(
@@ -1035,21 +1390,20 @@ with gr.Blocks(
                 elem_classes=["generate-button"],
             )
 
-        # ================================================
+        # =================================================
         # Result
-        # ================================================
+        # =================================================
 
         with gr.Column(
             scale=1,
             elem_classes=[
                 "lmm-card",
-                "track-card",
             ],
         ):
 
             gr.Markdown(
                 "YOUR TRACK",
-                elem_classes=["section-title"],
+                elem_classes=["section-label"],
             )
 
             result_audio = gr.Audio(
@@ -1059,13 +1413,12 @@ with gr.Blocks(
             )
 
             result_info = gr.Markdown(
-                "ここに生成した音楽が表示されます。",
-                elem_classes=["small-muted"],
+                "ここに生成した音楽が表示されます。"
             )
 
             gr.Markdown(
                 "AI PROMPT",
-                elem_classes=["section-title"],
+                elem_classes=["section-label"],
             )
 
             generated_prompt = gr.Textbox(
@@ -1074,18 +1427,46 @@ with gr.Blocks(
                 interactive=False,
             )
 
-    # -----------------------------------------------------
-    # Footer
-    # -----------------------------------------------------
+    # =====================================================
+    # Device detector
+    # =====================================================
 
-    gr.Markdown(
-        "LMM MUSIC · Local AI Music Studio",
-        elem_id="footer",
+    detect_button.click(
+        fn=update_device_info,
+        inputs=[
+            gpu_available,
+            gpu_name,
+            gpu_vendor,
+            webgpu_available,
+            cpu_threads,
+            device_memory,
+        ],
+        outputs=[
+            device_status,
+            selected_mode,
+        ],
     )
 
-    # -----------------------------------------------------
+    demo.load(
+        fn=update_device_info,
+        inputs=[
+            gpu_available,
+            gpu_name,
+            gpu_vendor,
+            webgpu_available,
+            cpu_threads,
+            device_memory,
+        ],
+        outputs=[
+            device_status,
+            selected_mode,
+        ],
+        js=DEVICE_DETECTION_JS,
+    )
+
+    # =====================================================
     # Generate
-    # -----------------------------------------------------
+    # =====================================================
 
     generate_button.click(
         fn=generate_music,
@@ -1101,12 +1482,22 @@ with gr.Blocks(
             reference_audio,
             reference_url,
             reference_strength,
+            selected_mode,
         ],
         outputs=[
             result_audio,
             result_info,
             generated_prompt,
         ],
+    )
+
+    # =====================================================
+    # Footer
+    # =====================================================
+
+    gr.Markdown(
+        "LMM MUSIC · Local AI Music Studio",
+        elem_id="footer",
     )
 
 
@@ -1122,4 +1513,5 @@ if __name__ == "__main__":
         show_error=True,
         theme=gr.themes.Base(),
         css=CSS,
+        footer_links=[],
     )
