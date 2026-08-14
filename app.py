@@ -1151,10 +1151,11 @@ def generate_music(
             audio_duration,
         )
 
-        genres = metas.get(
-            "genres",
-            genre or "-",
-        )
+       genres = (
+    metas.get("genres")
+    or genre
+    or "N/A"
+)
 
         if (
             selected_mode
