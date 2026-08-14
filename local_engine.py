@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import requests
@@ -20,9 +22,6 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 
-# WebサイトからLocal Engineへ接続できるようにする。
-# Engine自体は127.0.0.1で待ち受けるため、
-# 外部ネットワークから直接アクセスされることはない。
 CORS(
     app,
     resources={
@@ -44,7 +43,7 @@ def health():
     try:
         response = requests.get(
             f"{ACE_STEP_API}/health",
-            timeout=3,
+            timeout=5,
         )
 
         ace_step = (
@@ -102,15 +101,18 @@ def generate():
         ), 400
 
     try:
+        # ACE-Stepにはフォーム形式で転送
         response = requests.post(
             f"{ACE_STEP_API}/release_task",
-            json=data,
+            data=data,
             timeout=300,
         )
 
         if response.status_code >= 400:
+
             try:
                 detail = response.json()
+
             except Exception:
                 detail = response.text
 
@@ -165,7 +167,23 @@ def query_result():
             timeout=60,
         )
 
-        response.raise_for_status()
+        if response.status_code >= 400:
+
+            try:
+                detail = response.json()
+
+            except Exception:
+                detail = response.text
+
+            return jsonify(
+                {
+                    "error": (
+                        "ACE-Stepの結果取得で"
+                        "エラーが発生しました。"
+                    ),
+                    "detail": detail,
+                }
+            ), response.status_code
 
         return jsonify(
             response.json()
@@ -185,12 +203,11 @@ def query_result():
 
 
 # =========================================================
-# Download / Audio
+# Audio
 # =========================================================
 
 @app.get("/audio")
 def audio():
-
     filename = request.args.get(
         "file"
     )
@@ -233,13 +250,13 @@ if __name__ == "__main__":
     print("=" * 60)
 
     print(
-        f"Local Engine:"
-        f" http://{APP_HOST}:{APP_PORT}"
+        f"Local Engine: "
+        f"http://{APP_HOST}:{APP_PORT}"
     )
 
     print(
-        f"ACE-Step API:"
-        f" {ACE_STEP_API}"
+        f"ACE-Step API: "
+        f"{ACE_STEP_API}"
     )
 
     print("=" * 60)
