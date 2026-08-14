@@ -9,7 +9,7 @@ from urllib.parse import urljoin, urlparse
 import gradio as gr
 import requests
 
-from device_detector import analyze_device, mode_label
+from device_detector import analyze_device
 
 
 # =========================================================
@@ -17,6 +17,7 @@ from device_detector import analyze_device, mode_label
 # =========================================================
 
 ACE_STEP_API = "http://127.0.0.1:8001"
+LOCAL_ENGINE_API = "http://127.0.0.1:8765"
 
 APP_HOST = "127.0.0.1"
 APP_PORT = 7861
@@ -31,68 +32,152 @@ MAX_REFERENCE_SIZE = 50 * 1024 * 1024
 
 
 # =========================================================
-# ACE-Step API
+# API URL
 # =========================================================
 
-def check_api():
+def get_generation_api(selected_mode: str):
+    """
+    端末性能に応じて生成先を決める。
+
+    local_gpu / local_cpu
+        -> Local Engine
+
+    cloud
+        -> 現段階ではACE-Step APIへ直接接続
+    """
+
+    if selected_mode in (
+        "local_gpu",
+        "local_cpu",
+    ):
+        return LOCAL_ENGINE_API
+
+    return ACE_STEP_API
+
+
+# =========================================================
+# Health Check
+# =========================================================
+
+def check_api(base_url: str):
     try:
         response = requests.get(
-            f"{ACE_STEP_API}/health",
-            timeout=10,
+            f"{base_url}/health",
+            timeout=8,
         )
 
         response.raise_for_status()
 
         data = response.json()
 
-        return data.get("code") == 200
+        return data
 
     except Exception:
-        return False
+        return None
 
+
+def check_generation_engine(selected_mode: str):
+    """
+    選択された生成エンジンが使えるか確認する。
+    """
+
+    base_url = get_generation_api(
+        selected_mode
+    )
+
+    health = check_api(
+        base_url
+    )
+
+    if not health:
+        return False, base_url, None
+
+    if selected_mode in (
+        "local_gpu",
+        "local_cpu",
+    ):
+
+        ace_step_ok = health.get(
+            "ace_step",
+            False,
+        )
+
+        return (
+            bool(ace_step_ok),
+            base_url,
+            health,
+        )
+
+    return (
+        True,
+        base_url,
+        health,
+    )
+
+
+# =========================================================
+# JSON POST
+# =========================================================
 
 def api_post_json(
+    base_url: str,
     endpoint: str,
     payload: dict,
     timeout: int = 300,
 ):
     response = requests.post(
-        f"{ACE_STEP_API}{endpoint}",
+        f"{base_url}{endpoint}",
         json=payload,
         timeout=timeout,
     )
 
     if response.status_code >= 400:
+
         try:
             error_data = response.json()
+
         except Exception:
             error_data = response.text
 
         raise RuntimeError(
-            f"ACE-Step API Error\n"
+            f"API Error\n"
             f"HTTP: {response.status_code}\n\n"
             f"{error_data}"
         )
 
     data = response.json()
 
-    if data.get("code") not in (None, 200):
+    if data.get("code") not in (
+        None,
+        200,
+    ):
+
         raise RuntimeError(
             data.get(
                 "error",
-                "ACE-Step APIでエラーが発生しました。",
+                "APIでエラーが発生しました。",
             )
         )
 
     return data
 
 
+# =========================================================
+# Reference Audio
+# =========================================================
+
 def api_post_reference_audio(
     fields: dict,
     reference_path: str,
     timeout: int = 300,
 ):
-    path = Path(reference_path)
+    """
+    参照音声はACE-Stepへ直接送る。
+    """
+
+    path = Path(
+        reference_path
+    )
 
     if not path.is_file():
         raise RuntimeError(
@@ -144,8 +229,10 @@ def api_post_reference_audio(
         )
 
     if response.status_code >= 400:
+
         try:
             error_data = response.json()
+
         except Exception:
             error_data = response.text
 
@@ -157,7 +244,11 @@ def api_post_reference_audio(
 
     data = response.json()
 
-    if data.get("code") not in (None, 200):
+    if data.get("code") not in (
+        None,
+        200,
+    ):
+
         raise RuntimeError(
             data.get(
                 "error",
@@ -168,26 +259,30 @@ def api_post_reference_audio(
     return data
 
 
-# =========================================================
-# Reference Audio
-# =========================================================
-
-def download_reference_from_url(url: str):
+def download_reference_from_url(
+    url: str,
+):
+    """
+    音声ファイルURLをローカルへ保存。
+    """
 
     url = url.strip()
 
     if not url:
         return None
 
-    parsed = urlparse(url)
+    parsed = urlparse(
+        url
+    )
 
     if parsed.scheme not in (
         "http",
         "https",
     ):
+
         raise RuntimeError(
-            "音声リンクは http:// または https:// "
-            "で始まるURLを入力してください。"
+            "音声リンクは http:// または "
+            "https:// のURLを使用してください。"
         )
 
     allowed_extensions = {
@@ -216,13 +311,19 @@ def download_reference_from_url(url: str):
 
     response.raise_for_status()
 
-    content_type = response.headers.get(
-        "Content-Type",
-        "",
-    ).lower()
+    content_type = (
+        response.headers
+        .get(
+            "Content-Type",
+            "",
+        )
+        .lower()
+    )
 
     content_is_audio = (
-        content_type.startswith("audio/")
+        content_type.startswith(
+            "audio/"
+        )
         or "application/octet-stream"
         in content_type
     )
@@ -231,6 +332,7 @@ def download_reference_from_url(url: str):
         extension not in allowed_extensions
         and not content_is_audio
     ):
+
         raise RuntimeError(
             "このリンクは直接の音声ファイルURLとして"
             "認識できませんでした。"
@@ -246,12 +348,15 @@ def download_reference_from_url(url: str):
     )
 
     output_path = (
-        REFERENCE_DIR / filename
+        REFERENCE_DIR /
+        filename
     )
 
     total_size = 0
 
-    with output_path.open("wb") as output_file:
+    with output_path.open(
+        "wb"
+    ) as output_file:
 
         for chunk in response.iter_content(
             chunk_size=1024 * 1024
@@ -273,7 +378,9 @@ def download_reference_from_url(url: str):
                     "参照音声が50MBを超えています。"
                 )
 
-            output_file.write(chunk)
+            output_file.write(
+                chunk
+            )
 
     return output_path
 
@@ -309,18 +416,20 @@ def build_prompt(
 
     if moods:
         parts.append(
-            "Mood: " + ", ".join(moods)
+            "Mood: "
+            + ", ".join(moods)
         )
 
     if instruments:
         parts.append(
-            "Instruments: " + ", ".join(instruments)
+            "Instruments: "
+            + ", ".join(instruments)
         )
 
     if reference_enabled:
         parts.append(
-            "Use the reference audio as a vocal timbre "
-            "and stylistic reference."
+            "Use the reference audio as a vocal "
+            "timbre and stylistic reference."
         )
 
     parts.append(
@@ -330,7 +439,9 @@ def build_prompt(
         "dynamic progression and memorable climax."
     )
 
-    return ". ".join(parts)
+    return ". ".join(
+        parts
+    )
 
 
 # =========================================================
@@ -338,25 +449,38 @@ def build_prompt(
 # =========================================================
 
 def wait_for_result(
+    base_url,
     task_id,
     progress=None,
 ):
+    """
+    Local Engine / ACE-Step共通。
+    """
+
     max_wait_seconds = 1200
+
     start_time = time.time()
 
     while True:
 
-        elapsed = time.time() - start_time
+        elapsed = (
+            time.time()
+            - start_time
+        )
 
         if elapsed >= max_wait_seconds:
+
             raise TimeoutError(
                 "音楽生成が20分を超えました。"
             )
 
         response = api_post_json(
+            base_url,
             "/query_result",
             {
-                "task_id_list": [task_id]
+                "task_id_list": [
+                    task_id
+                ]
             },
             timeout=60,
         )
@@ -367,7 +491,9 @@ def wait_for_result(
         )
 
         if not results:
+
             time.sleep(2)
+
             continue
 
         job = results[0]
@@ -380,6 +506,7 @@ def wait_for_result(
         if status == 0:
 
             if progress:
+
                 progress(
                     None,
                     desc=(
@@ -389,6 +516,7 @@ def wait_for_result(
                 )
 
             time.sleep(2)
+
             continue
 
         if status == 1:
@@ -402,13 +530,17 @@ def wait_for_result(
                 raw_result,
                 str,
             ):
+
                 result = json.loads(
                     raw_result
                 )
+
             else:
+
                 result = raw_result
 
             if not result:
+
                 raise RuntimeError(
                     "生成結果が空でした。"
                 )
@@ -418,7 +550,7 @@ def wait_for_result(
         if status == 2:
 
             raise RuntimeError(
-                "ACE-Stepで音楽生成に失敗しました。\n"
+                "音楽生成に失敗しました。\n"
                 f"{job.get('result', '')}"
             )
 
@@ -430,29 +562,40 @@ def save_audio(
     task_id,
 ):
     if not file_value:
+
         raise RuntimeError(
             "生成された音源が見つかりません。"
         )
 
-    file_value = str(file_value)
-
-    output_path = (
-        OUTPUT_DIR /
-        f"{task_id}.mp3"
+    file_value = str(
+        file_value
     )
 
-    local_path = Path(file_value)
+    output_path = (
+        OUTPUT_DIR
+        / f"{task_id}.mp3"
+    )
+
+    local_path = Path(
+        file_value
+    )
 
     if local_path.is_file():
+
         shutil.copy2(
             local_path,
             output_path,
         )
+
         return output_path
 
     if (
-        file_value.startswith("http://")
-        or file_value.startswith("https://")
+        file_value.startswith(
+            "http://"
+        )
+        or file_value.startswith(
+            "https://"
+        )
     ):
 
         response = requests.get(
@@ -491,7 +634,8 @@ def save_audio(
         return output_path
 
     raise RuntimeError(
-        f"音源を取得できませんでした。\n{file_value}"
+        "音源を取得できませんでした。\n"
+        f"{file_value}"
     )
 
 
@@ -508,53 +652,89 @@ def update_device_info(
     device_memory,
 ):
     try:
+
         gpu_available_bool = (
-            str(gpu_available).lower()
+            str(
+                gpu_available
+            ).lower()
             == "true"
         )
 
         webgpu_available_bool = (
-            str(webgpu_available).lower()
+            str(
+                webgpu_available
+            ).lower()
             == "true"
         )
 
-        cpu_threads_value = None
+        try:
+            cpu_threads_value = int(
+                cpu_threads
+            )
 
-        if cpu_threads:
-            try:
-                cpu_threads_value = int(
-                    cpu_threads
-                )
-            except (ValueError, TypeError):
-                cpu_threads_value = None
+        except (
+            ValueError,
+            TypeError,
+        ):
+            cpu_threads_value = None
 
-        memory_value = None
+        try:
+            memory_value = float(
+                device_memory
+            )
 
-        if device_memory:
-            try:
-                memory_value = float(
-                    device_memory
-                )
-            except (ValueError, TypeError):
-                memory_value = None
+        except (
+            ValueError,
+            TypeError,
+        ):
+            memory_value = None
 
         info = analyze_device(
-            gpu_available=gpu_available_bool,
-            gpu_name=gpu_name or None,
-            gpu_vendor=gpu_vendor or None,
-            webgpu_available=webgpu_available_bool,
-            cpu_threads=cpu_threads_value,
-            device_memory_gb=memory_value,
+            gpu_available=(
+                gpu_available_bool
+            ),
+            gpu_name=(
+                gpu_name
+                or None
+            ),
+            gpu_vendor=(
+                gpu_vendor
+                or None
+            ),
+            webgpu_available=(
+                webgpu_available_bool
+            ),
+            cpu_threads=(
+                cpu_threads_value
+            ),
+            device_memory_gb=(
+                memory_value
+            ),
         )
 
-        mode = info.recommended_mode
+        if (
+            info.recommended_mode
+            == "local_gpu"
+        ):
 
-        if mode == "local_gpu":
-            status_text = "⚡ ローカルGPU生成"
-        elif mode == "local_cpu":
-            status_text = "🖥️ ローカルCPU生成"
+            status_text = (
+                "⚡ ローカルGPU生成"
+            )
+
+        elif (
+            info.recommended_mode
+            == "local_cpu"
+        ):
+
+            status_text = (
+                "🖥️ ローカルCPU生成"
+            )
+
         else:
-            status_text = "☁️ クラウド生成"
+
+            status_text = (
+                "☁️ クラウド生成"
+            )
 
         gpu_text = (
             info.gpu_name
@@ -576,6 +756,7 @@ def update_device_info(
 
         html = f"""
         <div class="device-status">
+
             <div class="device-status-title">
                 {status_text}
             </div>
@@ -604,17 +785,22 @@ def update_device_info(
                 <div class="device-item">
                     <span>WebGPU</span>
                     <strong>
-                        {"対応" if info.webgpu_available else "非対応"}
+                        {
+                            "対応"
+                            if info.webgpu_available
+                            else "非対応"
+                        }
                     </strong>
                 </div>
 
             </div>
+
         </div>
         """
 
         return (
             html,
-            mode,
+            info.recommended_mode,
         )
 
     except Exception as exc:
@@ -622,6 +808,7 @@ def update_device_info(
         return (
             f"""
             <div class="device-status error">
+
                 <div class="device-status-title">
                     端末判定に失敗しました
                 </div>
@@ -629,6 +816,7 @@ def update_device_info(
                 <div class="device-status-reason">
                     {exc}
                 </div>
+
             </div>
             """,
             "cloud",
@@ -654,31 +842,57 @@ def generate_music(
     selected_mode,
     progress=gr.Progress(),
 ):
-    if not purpose and not description:
+    if (
+        not purpose
+        and not description
+    ):
+
         raise gr.Error(
             "用途か曲のイメージを入力してください。"
         )
 
-    if vocal_enabled and not lyrics.strip():
+    if (
+        vocal_enabled
+        and not lyrics.strip()
+    ):
+
         raise gr.Error(
             "ボーカルを有効にした場合は歌詞を入力してください。"
         )
 
     progress(
         0.02,
-        desc="ACE-Stepとの接続を確認中...",
+        desc="生成エンジンを確認中...",
     )
 
-    if not check_api():
+    engine_ok, base_url, health = (
+        check_generation_engine(
+            selected_mode
+        )
+    )
+
+    if not engine_ok:
+
+        if selected_mode in (
+            "local_gpu",
+            "local_cpu",
+        ):
+
+            raise gr.Error(
+                "この端末はローカル生成が選択されていますが、"
+                "LMM MUSIC Local Engineに接続できません。\n\n"
+                "Local Engineが起動しているか確認してください。"
+            )
+
         raise gr.Error(
-            "ACE-Step APIが起動していません。"
+            "音楽生成APIに接続できません。"
         )
 
-    # 現段階では生成エンジンはACE-Step。
-    # selected_modeは今後のルーティング用。
-    del selected_mode
-
     reference_path = None
+
+    # -----------------------------------------------------
+    # 参照音声
+    # -----------------------------------------------------
 
     if reference_url.strip():
 
@@ -700,9 +914,14 @@ def generate_music(
         )
 
         if not reference_path.is_file():
+
             raise gr.Error(
                 "参照音声ファイルが見つかりません。"
             )
+
+    # -----------------------------------------------------
+    # Duration
+    # -----------------------------------------------------
 
     duration_map = {
         "10秒": 10,
@@ -716,6 +935,10 @@ def generate_music(
         30,
     )
 
+    # -----------------------------------------------------
+    # Prompt
+    # -----------------------------------------------------
+
     prompt = build_prompt(
         purpose=purpose,
         description=description,
@@ -727,73 +950,156 @@ def generate_music(
         ),
     )
 
+    # -----------------------------------------------------
+    # ACE-Step params
+    # -----------------------------------------------------
+
     fields = {
         "prompt": prompt,
         "model": "acestep-v15-turbo",
+
         "audio_duration": str(
             audio_duration
         ),
+
         "audio_format": "mp3",
+
         "batch_size": "1",
+
         "inference_steps": "8",
+
         "thinking": "true",
+
         "use_cot_caption": "true",
+
         "use_cot_language": "true",
+
         "lm_model_path":
             "acestep-5Hz-lm-0.6B",
+
         "lm_backend": "pt",
+
         "vocal_language": "ja",
+
         "task_type": "text2music",
     }
 
     if vocal_enabled:
-        fields["lyrics"] = lyrics.strip()
+
+        fields["lyrics"] = (
+            lyrics.strip()
+        )
+
     else:
+
         fields["lyrics"] = "[inst]"
 
     if reference_path:
+
         fields[
             "audio_cover_strength"
         ] = str(
-            float(reference_strength)
+            float(
+                reference_strength
+            )
         )
+
+    # =====================================================
+    # 生成
+    # =====================================================
 
     try:
 
         progress(
             0.08,
-            desc="音楽を設計中...",
+            desc=(
+                "音楽を設計中..."
+            ),
         )
+
+        # -------------------------------------------------
+        # Reference audio
+        # -------------------------------------------------
+        #
+        # 参照音声は現在ACE-Stepへ直接送る。
+        # Local Engineへのmultipart中継は次段階で追加する。
+        #
 
         if reference_path:
 
             task_response = (
                 api_post_reference_audio(
                     fields,
-                    str(reference_path),
+                    str(
+                        reference_path
+                    ),
                 )
+            )
+
+            result_base_url = (
+                ACE_STEP_API
             )
 
         else:
 
+            # -------------------------------------------------
+            # ★ ここが今回の変更
+            # -------------------------------------------------
+
             task_response = api_post_json(
-                "/release_task",
+                base_url,
+                "/generate",
                 fields,
+                timeout=300,
             )
 
-        task_data = task_response.get(
-            "data",
-            {},
+            result_base_url = (
+                base_url
+            )
+
+        task_data = (
+            task_response.get(
+                "data",
+                {},
+            )
         )
 
-        task_id = task_data.get(
-            "task_id"
+        task_id = (
+            task_data.get(
+                "task_id"
+            )
         )
 
         if not task_id:
+
             raise RuntimeError(
-                "ACE-StepからタスクIDを取得できませんでした。"
+                "生成タスクIDを取得できませんでした。\n"
+                f"{task_response}"
             )
+
+        print()
+        print(
+            "=" * 60
+        )
+        print(
+            "LMM MUSIC GENERATION"
+        )
+        print(
+            "=" * 60
+        )
+        print(
+            f"Mode: {selected_mode}"
+        )
+        print(
+            f"Engine: {result_base_url}"
+        )
+        print(
+            f"Task: {task_id}"
+        )
+        print(
+            "=" * 60
+        )
+        print()
 
         progress(
             0.10,
@@ -801,6 +1107,7 @@ def generate_music(
         )
 
         result = wait_for_result(
+            result_base_url,
             task_id,
             progress,
         )
@@ -811,14 +1118,23 @@ def generate_music(
         )
 
         output_path = save_audio(
-            result.get("file"),
+            result.get(
+                "file"
+            ),
             task_id,
         )
 
-        metas = result.get(
-            "metas",
-            {},
-        ) or {}
+        # -------------------------------------------------
+        # Meta
+        # -------------------------------------------------
+
+        metas = (
+            result.get(
+                "metas",
+                {},
+            )
+            or {}
+        )
 
         bpm = metas.get(
             "bpm",
@@ -840,6 +1156,30 @@ def generate_music(
             genre or "-",
         )
 
+        if (
+            selected_mode
+            == "local_gpu"
+        ):
+
+            mode_text = (
+                "⚡ ローカルGPU"
+            )
+
+        elif (
+            selected_mode
+            == "local_cpu"
+        ):
+
+            mode_text = (
+                "🖥️ ローカルCPU"
+            )
+
+        else:
+
+            mode_text = (
+                "☁️ クラウド"
+            )
+
         info = f"""
 ### 生成完了
 
@@ -847,7 +1187,13 @@ def generate_music(
 
 BPM {bpm}　·　{keyscale}　·　{real_duration}秒
 
-{"🎙️ 参照音声あり" if reference_path else "🎹 オリジナル生成"}
+**生成方式:** {mode_text}
+
+{
+    "🎙️ 参照音声あり"
+    if reference_path
+    else "🎹 オリジナル生成"
+}
 """
 
         progress(
@@ -856,7 +1202,9 @@ BPM {bpm}　·　{keyscale}　·　{real_duration}秒
         )
 
         return (
-            str(output_path),
+            str(
+                output_path
+            ),
             info,
             prompt,
         )
@@ -866,6 +1214,132 @@ BPM {bpm}　·　{keyscale}　·　{real_duration}秒
         raise gr.Error(
             str(exc)
         )
+
+
+# =========================================================
+# Browser JS
+# =========================================================
+
+DEVICE_DETECTION_JS = """
+async () => {
+
+    const result = {
+        gpu_available: false,
+        gpu_name: "",
+        gpu_vendor: "",
+        webgpu_available: false,
+        cpu_threads:
+            navigator.hardwareConcurrency || "",
+        device_memory:
+            navigator.deviceMemory || ""
+    };
+
+
+    // WebGPU
+    try {
+
+        if (navigator.gpu) {
+
+            const adapter =
+                await navigator.gpu.requestAdapter();
+
+            if (adapter) {
+
+                result.webgpu_available = true;
+                result.gpu_available = true;
+
+                try {
+
+                    const info =
+                        await adapter.requestAdapterInfo();
+
+                    result.gpu_name =
+                        info.description ||
+                        info.device ||
+                        "";
+
+                    result.gpu_vendor =
+                        info.vendor ||
+                        "";
+
+                } catch (error) {
+                }
+            }
+        }
+
+    } catch (error) {
+    }
+
+
+    // WebGL fallback
+    if (!result.gpu_name) {
+
+        try {
+
+            const canvas =
+                document.createElement(
+                    "canvas"
+                );
+
+            const gl =
+                canvas.getContext(
+                    "webgl"
+                ) ||
+                canvas.getContext(
+                    "experimental-webgl"
+                );
+
+            if (gl) {
+
+                const debugInfo =
+                    gl.getExtension(
+                        "WEBGL_debug_renderer_info"
+                    );
+
+                if (debugInfo) {
+
+                    result.gpu_vendor =
+                        gl.getParameter(
+                            debugInfo
+                            .UNMASKED_VENDOR_WEBGL
+                        ) || "";
+
+                    result.gpu_name =
+                        gl.getParameter(
+                            debugInfo
+                            .UNMASKED_RENDERER_WEBGL
+                        ) || "";
+                }
+            }
+
+        } catch (error) {
+        }
+    }
+
+
+    return [
+        String(
+            result.gpu_available
+        ),
+
+        result.gpu_name,
+
+        result.gpu_vendor,
+
+        String(
+            result.webgpu_available
+        ),
+
+        String(
+            result.cpu_threads
+        ),
+
+        String(
+            result.device_memory
+        )
+    ];
+}
+"""
 
 
 # =========================================================
@@ -880,8 +1354,6 @@ CSS = """
     --line: rgba(255,255,255,.08);
     --text: #f5f7fb;
     --muted: #8d93a3;
-    --accent: #ffffff;
-    --green: #57e389;
 }
 
 body {
@@ -964,7 +1436,8 @@ footer {
 
 .device-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns:
+        repeat(2, minmax(0, 1fr));
     gap: 10px;
     margin-top: 14px;
 }
@@ -988,10 +1461,6 @@ footer {
     word-break: break-word;
 }
 
-.device-status.error {
-    border-color: rgba(255, 100, 100, .25);
-}
-
 .section-label {
     color: var(--muted);
     font-size: 12px;
@@ -1002,6 +1471,7 @@ footer {
 }
 
 @media (max-width: 800px) {
+
     #hero h1 {
         font-size: 42px !important;
     }
@@ -1009,120 +1479,6 @@ footer {
     .device-grid {
         grid-template-columns: 1fr;
     }
-}
-"""
-
-
-# =========================================================
-# Browser-side device detection
-# =========================================================
-
-DEVICE_DETECTION_JS = """
-async () => {
-
-    const result = {
-        gpu_available: false,
-        gpu_name: "",
-        gpu_vendor: "",
-        webgpu_available: false,
-        cpu_threads: navigator.hardwareConcurrency || "",
-        device_memory: navigator.deviceMemory || ""
-    };
-
-    // -----------------------------
-    // WebGPU
-    // -----------------------------
-
-    try {
-
-        if (navigator.gpu) {
-
-            const adapter =
-                await navigator.gpu.requestAdapter();
-
-            if (adapter) {
-
-                result.webgpu_available = true;
-                result.gpu_available = true;
-
-                try {
-
-                    const info =
-                        await adapter.requestAdapterInfo();
-
-                    result.gpu_name =
-                        info.description ||
-                        info.device ||
-                        "";
-
-                    result.gpu_vendor =
-                        info.vendor ||
-                        "";
-
-                } catch (error) {
-
-                    // Privacy settings may hide GPU information.
-                    result.gpu_name = "";
-                    result.gpu_vendor = "";
-                }
-            }
-        }
-
-    } catch (error) {
-
-        result.webgpu_available = false;
-    }
-
-
-    // -----------------------------
-    // WebGL fallback
-    // -----------------------------
-
-    if (!result.gpu_name) {
-
-        try {
-
-            const canvas =
-                document.createElement("canvas");
-
-            const gl =
-                canvas.getContext("webgl") ||
-                canvas.getContext("experimental-webgl");
-
-            if (gl) {
-
-                const debugInfo =
-                    gl.getExtension(
-                        "WEBGL_debug_renderer_info"
-                    );
-
-                if (debugInfo) {
-
-                    result.gpu_vendor =
-                        gl.getParameter(
-                            debugInfo.UNMASKED_VENDOR_WEBGL
-                        ) || "";
-
-                    result.gpu_name =
-                        gl.getParameter(
-                            debugInfo.UNMASKED_RENDERER_WEBGL
-                        ) || "";
-                }
-            }
-
-        } catch (error) {
-        }
-    }
-
-
-    return [
-        String(result.gpu_available),
-        result.gpu_name,
-        result.gpu_vendor,
-        String(result.webgpu_available),
-        String(result.cpu_threads),
-        String(result.device_memory),
-    ];
 }
 """
 
@@ -1137,9 +1493,9 @@ with gr.Blocks(
     css=CSS,
 ) as demo:
 
-    # =====================================================
-    # Hidden device data
-    # =====================================================
+    # -----------------------------------------------------
+    # Hidden device info
+    # -----------------------------------------------------
 
     gpu_available = gr.Textbox(
         visible=False,
@@ -1170,9 +1526,9 @@ with gr.Blocks(
         visible=False,
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # Header
-    # =====================================================
+    # -----------------------------------------------------
 
     with gr.Row(
         elem_id="app-header",
@@ -1196,9 +1552,9 @@ with gr.Blocks(
                 elem_id="nav",
             )
 
-    # =====================================================
+    # -----------------------------------------------------
     # Hero
-    # =====================================================
+    # -----------------------------------------------------
 
     with gr.Column(
         elem_id="hero",
@@ -1212,24 +1568,29 @@ with gr.Blocks(
             "あなたのアイデアから、音楽を作る。"
         )
 
-    # =====================================================
-    # Device status
-    # =====================================================
+    # -----------------------------------------------------
+    # Device
+    # -----------------------------------------------------
 
     gr.Markdown(
         "DEVICE",
-        elem_classes=["section-label"],
+        elem_classes=[
+            "section-label"
+        ],
     )
 
     device_status = gr.HTML(
         """
         <div class="device-status">
+
             <div class="device-status-title">
                 端末を確認しています...
             </div>
+
             <div class="device-status-reason">
                 この端末に合った生成方式を確認しています。
             </div>
+
         </div>
         """
     )
@@ -1239,9 +1600,9 @@ with gr.Blocks(
         visible=False,
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # Main
-    # =====================================================
+    # -----------------------------------------------------
 
     with gr.Row():
 
@@ -1251,12 +1612,16 @@ with gr.Blocks(
 
         with gr.Column(
             scale=1,
-            elem_classes=["lmm-card"],
+            elem_classes=[
+                "lmm-card"
+            ],
         ):
 
             gr.Markdown(
                 "CREATE",
-                elem_classes=["section-label"],
+                elem_classes=[
+                    "section-label"
+                ],
             )
 
             purpose = gr.Textbox(
@@ -1361,7 +1726,9 @@ with gr.Blocks(
 
             gr.Markdown(
                 "REFERENCE VOICE",
-                elem_classes=["section-label"],
+                elem_classes=[
+                    "section-label"
+                ],
             )
 
             reference_audio = gr.Audio(
@@ -1373,7 +1740,9 @@ with gr.Blocks(
 
             reference_url = gr.Textbox(
                 label="音声ファイルURL",
-                placeholder="https://example.com/voice.wav",
+                placeholder=(
+                    "https://example.com/voice.wav"
+                ),
             )
 
             reference_strength = gr.Slider(
@@ -1387,7 +1756,9 @@ with gr.Blocks(
             generate_button = gr.Button(
                 "CREATE MUSIC  →",
                 variant="primary",
-                elem_classes=["generate-button"],
+                elem_classes=[
+                    "generate-button"
+                ],
             )
 
         # =================================================
@@ -1397,13 +1768,15 @@ with gr.Blocks(
         with gr.Column(
             scale=1,
             elem_classes=[
-                "lmm-card",
+                "lmm-card"
             ],
         ):
 
             gr.Markdown(
                 "YOUR TRACK",
-                elem_classes=["section-label"],
+                elem_classes=[
+                    "section-label"
+                ],
             )
 
             result_audio = gr.Audio(
@@ -1418,7 +1791,9 @@ with gr.Blocks(
 
             gr.Markdown(
                 "AI PROMPT",
-                elem_classes=["section-label"],
+                elem_classes=[
+                    "section-label"
+                ],
             )
 
             generated_prompt = gr.Textbox(
@@ -1428,7 +1803,7 @@ with gr.Blocks(
             )
 
     # =====================================================
-    # Device detector
+    # Device detection
     # =====================================================
 
     detect_button.click(
@@ -1496,8 +1871,7 @@ with gr.Blocks(
     # =====================================================
 
     gr.Markdown(
-        "LMM MUSIC · Local AI Music Studio",
-        elem_id="footer",
+        "LMM MUSIC · Local AI Music Studio"
     )
 
 
